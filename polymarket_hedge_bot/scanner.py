@@ -17,6 +17,7 @@ from polymarket_hedge_bot.formatting import positive_result_probability
 from polymarket_hedge_bot.journal import create_signal
 from polymarket_hedge_bot.live_discovery import discover_polymarket_btc_candidates
 from polymarket_hedge_bot.scout import Opportunity, load_candidates, scout_candidates
+from polymarket_hedge_bot.status import now_iso, write_scanner_status
 from polymarket_hedge_bot.telegram_bot import TelegramBot, TelegramResponse
 from polymarket_hedge_bot.telegram_views import render_scout_cards
 from polymarket_hedge_bot.utils import load_dotenv, safe_print
@@ -140,6 +141,11 @@ def risk_config(config: ScannerConfig) -> RiskConfig:
 
 
 def run_scan(config: ScannerConfig) -> list[Opportunity]:
+    opportunities, effective_config = evaluate_opportunities(config)
+    return [opportunity for opportunity in opportunities if should_alert(opportunity, effective_config)]
+
+
+def evaluate_opportunities(config: ScannerConfig) -> tuple[list[Opportunity], ScannerConfig]:
     config = with_live_binance_data(config)
     config = with_live_deribit_iv(config)
     if config.live_polymarket:
@@ -164,7 +170,7 @@ def run_scan(config: ScannerConfig) -> list[Opportunity]:
         use_live_orderbook=config.live_orderbook,
         max_slippage=config.max_slippage,
     )
-    return [opportunity for opportunity in opportunities if should_alert(opportunity, config)]
+    return opportunities, config
 
 
 def with_live_binance_data(config: ScannerConfig) -> ScannerConfig:
@@ -364,14 +370,33 @@ def run_scanner_loop(
     safe_print(f"Filters: min_decision={config.min_decision}, min_score={config.min_score}, min_edge={config.min_edge}")
 
     while stop_event is None or not stop_event.is_set():
+        started_at = now_iso()
         state = load_state()
         try:
-            opportunities = run_scan(config)
-            sent = send_alerts(opportunities, config, state, bot, chat_id, dry_run)
+            opportunities, effective_config = evaluate_opportunities(config)
+            matched = [opportunity for opportunity in opportunities if should_alert(opportunity, effective_config)]
+            sent = send_alerts(matched, effective_config, state, bot, chat_id, dry_run)
             if not dry_run:
                 save_state(state)
-            safe_print(f"Scan done: matched={len(opportunities)}, sent={sent}")
+            write_scan_status(
+                config=effective_config,
+                started_at=started_at,
+                ok=True,
+                scanned=len(opportunities),
+                matched=len(matched),
+                sent=sent,
+            )
+            safe_print(f"Scan done: matched={len(matched)}, sent={sent}")
         except Exception as exc:
+            write_scan_status(
+                config=config,
+                started_at=started_at,
+                ok=False,
+                scanned=0,
+                matched=0,
+                sent=0,
+                error=str(exc),
+            )
             safe_print(f"Scanner error: {exc}")
 
         if once:
@@ -383,6 +408,40 @@ def run_scanner_loop(
 
     safe_print("24/7 scanner stopped")
     return 0
+
+
+def write_scan_status(
+    config: ScannerConfig,
+    started_at: str,
+    ok: bool,
+    scanned: int,
+    matched: int,
+    sent: int,
+    error: str | None = None,
+) -> None:
+    write_scanner_status(
+        {
+            "ok": ok,
+            "started_at": started_at,
+            "finished_at": now_iso(),
+            "source": "live Polymarket" if config.live_polymarket else config.candidates,
+            "interval_seconds": config.interval_seconds,
+            "scanned": scanned,
+            "matched": matched,
+            "sent": sent,
+            "btc_price": config.live_btc_price,
+            "iv": config.live_iv,
+            "funding_rate": config.funding_rate,
+            "min_decision": config.min_decision,
+            "min_score": config.min_score,
+            "min_edge": config.min_edge,
+            "min_positive_probability": config.min_positive_probability,
+            "min_net_upside": config.min_net_upside,
+            "min_reward_risk": config.min_reward_risk,
+            "live_orderbook": config.live_orderbook,
+            "error": error,
+        }
+    )
 
 
 def main() -> int:

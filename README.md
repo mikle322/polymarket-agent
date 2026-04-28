@@ -61,9 +61,12 @@ Telegram commands:
 /analyze --slug test --strike 80000 --direction up --stake 200 --deadline 2026-05-01 --btc-price 77000 --iv 0.30 --no-price 0.57
 /monitor --pm-cost 287.35 --pm-current-value 394.85 --pm-shares 509.5 --futures-realized-pnl -200.58 --max-loss 300
 /pm_liquidity --slug market-slug-here --outcome No --stake 200
+/status
 /journal
 /close trade_id --pnl 42.5 --note "manual result"
 ```
+
+`/status` shows the latest 24/7 scanner heartbeat: last scan time, source, scanned/matched/sent counts, IV/BTC inputs, filters, and the latest error if one happened.
 
 After `/analyze` and `/scout`, Telegram shows inline buttons:
 

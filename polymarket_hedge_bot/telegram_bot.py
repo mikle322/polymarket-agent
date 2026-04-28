@@ -22,6 +22,7 @@ from polymarket_hedge_bot.liquidity import check_basic_liquidity
 from polymarket_hedge_bot.probability import touch_probability, years_until
 from polymarket_hedge_bot.quality import calculate_quality
 from polymarket_hedge_bot.scout import load_candidates, scout_candidates
+from polymarket_hedge_bot.status import render_scanner_status
 from polymarket_hedge_bot.telegram_views import render_analyze_card, render_scout_cards
 from polymarket_hedge_bot.utils import load_dotenv, safe_print
 
@@ -33,6 +34,7 @@ HELP_TEXT = """Polymarket Hedge Bot
 /scout <args>
 /monitor <args>
 /pm_liquidity <args>
+/status
 /journal
 /close <trade_id> --pnl <amount> --note "optional note"
 /ping
@@ -196,6 +198,8 @@ def handle_text_command(text: str) -> TelegramResponse:
         return TelegramResponse(HELP_TEXT)
     if text == "/ping":
         return TelegramResponse("pong")
+    if text == "/status":
+        return TelegramResponse(render_scanner_status())
     if text == "/journal":
         return TelegramResponse(journal_summary())
     if text.startswith("/close"):
