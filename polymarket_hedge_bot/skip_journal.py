@@ -333,3 +333,123 @@ def skip_bucket(record: SkipRecord) -> str:
     if record.hypothetical_result_pnl >= 10:
         return "win"
     return "flat"
+
+
+def _tag(value: Any) -> str:
+    import html as _html
+
+    return _html.escape(str(value))
+
+
+def _short_dt(value: str | None) -> str:
+    if not value:
+        return "n/a"
+    return _tag(value.replace("T", " ").replace("+00:00", " UTC"))
+
+
+def _result_emoji(record: SkipRecord) -> str:
+    if record.reviewed_at is None:
+        return "⏳"
+    if record.would_have_been_profitable:
+        return "🟢"
+    if record.hypothetical_result_pnl is not None and abs(record.hypothetical_result_pnl) < 10:
+        return "⚪"
+    return "🔴"
+
+
+def review_verdict(record: SkipRecord) -> str:
+    if record.reviewed_at is None:
+        return "⏳ ще не перевірено"
+    result = "прибуткова" if record.would_have_been_profitable else "збиткова"
+    return f"{_result_emoji(record)} {record.actual_outcome} | {result} | PnL {money(record.hypothetical_result_pnl or 0.0)}"
+
+
+def render_last_skips(limit: int = 10) -> str:
+    records = load_skips()
+    if not records:
+        return (
+            "🧩 <b>Пропущені угоди</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "Поки немає записів. Коли scanner пропустить кандидата, бот збере його тут для подальшого аналізу."
+        )
+
+    shown = records[-limit:][::-1]
+    lines = [
+        "🧩 <b>Останні пропущені угоди</b>",
+        "━━━━━━━━━━━━━━━━",
+        f"Показую: <b>{len(shown)}</b> з <b>{len(records)}</b>",
+        "",
+    ]
+    for index, record in enumerate(shown, start=1):
+        lines.extend(
+            [
+                f"{index}. {_result_emoji(record)} <b>{_tag(record.decision)}</b> | score <b>{record.score:.1f}</b>",
+                f"<code>{_tag(record.slug)}</code>",
+                f"• Причина skip: {_tag(ua_reason(record.reason))}",
+                f"• NO wins: <b>{pct(record.no_win_probability)}</b> | Edge: <b>{pct(record.edge)}</b> | NO: <b>{record.no_price:.3f}</b>",
+                f"• Якість: <b>{_tag(record.quality_label)}</b> | Net upside: <b>{money(record.net_upside)}</b> | R/R: <b>{record.reward_risk:.2f}</b>",
+                f"• Worst-case: <b>{money(record.worst_case_after_sl)}</b>",
+                f"• Якби NO wins: <b>{money(record.hypothetical_no_win_pnl)}</b> | якби touch: <b>{money(record.hypothetical_touch_pnl)}</b>",
+                f"• Дедлайн: <code>{_short_dt(record.deadline)}</code>",
+                f"• Review: {review_verdict(record)}",
+                "",
+            ]
+        )
+    return "\n".join(lines).rstrip()
+
+
+def render_skips_bucket(bucket: str, limit: int = 10) -> str:
+    labels = {
+        "loss": ("🔴", "Повний мінус"),
+        "flat": ("⚪", "Біля нуля / мінімальний результат"),
+        "win": ("🟢", "Максимальний плюс"),
+        "pending": ("⏳", "Ще не закрились"),
+    }
+    icon, title = labels.get(bucket, ("🧩", bucket.upper()))
+    records = [record for record in load_skips() if skip_bucket(record) == bucket]
+    if not records:
+        return (
+            f"{icon} <b>Пропущені угоди: {title}</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "Поки немає записів у цій категорії."
+        )
+
+    shown = records[-limit:][::-1]
+    lines = [
+        f"{icon} <b>Пропущені угоди: {title}</b>",
+        "━━━━━━━━━━━━━━━━",
+        f"Знайдено: <b>{len(records)}</b> | Показую: <b>{len(shown)}</b>",
+        "",
+    ]
+    for index, record in enumerate(shown, start=1):
+        pnl = record.hypothetical_result_pnl
+        pnl_text = "ще немає" if pnl is None else money(pnl)
+        lines.extend(
+            [
+                f"{index}. <code>{_tag(record.slug)}</code>",
+                f"• Результат: <b>{_tag(record.actual_outcome or 'pending')}</b> | PnL: <b>{pnl_text}</b>",
+                f"• Причина skip: {_tag(ua_reason(record.reason))}",
+                f"• NO wins: <b>{pct(record.no_win_probability)}</b> | Edge: <b>{pct(record.edge)}</b> | R/R: <b>{record.reward_risk:.2f}</b>",
+                f"• Net upside: <b>{money(record.net_upside)}</b> | Worst-case: <b>{money(record.worst_case_after_sl)}</b>",
+                "",
+            ]
+        )
+    return "\n".join(lines).rstrip()
+
+
+def render_review_summary(summary: SkipReviewSummary) -> str:
+    lines = [
+        "🔍 <b>Review пропущених угод</b>",
+        "━━━━━━━━━━━━━━━━",
+        f"• Перевірено після дедлайну: <b>{summary.checked}</b>",
+        f"• Оновлено результатів: <b>{summary.reviewed}</b>",
+        f"• Були б прибуткові: <b>{summary.profitable}</b>",
+        f"• Ще очікують/не закриті: <b>{summary.pending}</b>",
+    ]
+    if summary.reviewed:
+        lines.append(f"• Частка прибуткових: <b>{summary.profitable / summary.reviewed * 100:.1f}%</b>")
+    if summary.errors:
+        lines.extend(["", "⚠️ <b>Помилки</b>"])
+        lines.extend(f"• {_tag(error)}" for error in summary.errors[:5])
+    lines.extend(["", "Деталі дивись у розділі <b>Пропущені угоди</b> або через /last_skips."])
+    return "\n".join(lines)

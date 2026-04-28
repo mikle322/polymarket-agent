@@ -2,7 +2,15 @@ import html
 
 from polymarket_hedge_bot.costs import CostResult
 from polymarket_hedge_bot.edge import EdgeResult
-from polymarket_hedge_bot.formatting import action_label, entry_requirement, main_problem, money, pct, positive_result_probability, ua_reason
+from polymarket_hedge_bot.formatting import (
+    action_label,
+    entry_requirement,
+    main_problem,
+    money,
+    pct,
+    positive_result_probability,
+    ua_reason,
+)
 from polymarket_hedge_bot.hedge import HedgeResult
 from polymarket_hedge_bot.liquidity import LiquidityCheck
 from polymarket_hedge_bot.quality import QualityResult
@@ -10,7 +18,7 @@ from polymarket_hedge_bot.scout import Opportunity
 
 
 def tag(text: str) -> str:
-    return html.escape(text)
+    return html.escape(str(text))
 
 
 def code(text: str) -> str:
@@ -19,6 +27,10 @@ def code(text: str) -> str:
 
 def bold(text: str) -> str:
     return f"<b>{tag(text)}</b>"
+
+
+def divider() -> str:
+    return "━━━━━━━━━━━━━━━━"
 
 
 def status_badge(decision: str) -> str:
@@ -32,15 +44,11 @@ def status_badge(decision: str) -> str:
 
 def beginner_summary(decision: str) -> str:
     summaries = {
-        "ENTER": "Угоду можна розглядати, але тільки після перевірки live-ліквідності та готового плану після SL.",
-        "WATCH": "Ідея потенційно цікава, але зараз ризик або умови ще не ідеальні.",
-        "SKIP": "Краще пропустити. Умови не дають достатньо якісного входу.",
+        "ENTER": "Є умови для входу, але фінальне рішення тільки після live orderbook, funding та post-SL плану.",
+        "WATCH": "Ідея потенційно цікава, але зараз умови ще не достатньо чисті.",
+        "SKIP": "Краще пропустити: угода не дає достатньо якісного входу за поточними фільтрами.",
     }
     return summaries.get(decision, "Потрібна додаткова перевірка.")
-
-
-def divider() -> str:
-    return "━━━━━━━━━━━━━━━━"
 
 
 def render_analyze_card(
@@ -55,40 +63,42 @@ def render_analyze_card(
     worst_case_after_sl: float,
     liquidity: LiquidityCheck,
 ) -> str:
+    positive_probability = positive_result_probability(edge, costs)
     return "\n".join(
         [
-            f"{bold('🧭 Висновок')} {code(status_badge(decision))}",
-            f"{tag(beginner_summary(decision))}",
+            f"🧭 <b>Висновок:</b> {code(status_badge(decision))}",
+            tag(beginner_summary(decision)),
             divider(),
             "",
-            f"{bold('📌 Ринок')}: {tag(market)}",
-            f"{bold('🎯 Ймовірність NO wins')}: {pct(edge.fair_no)}",
-            f"{bold('⭐ Якість угоди')}: {tag(quality.label)}",
-            f"{bold('⚠️ Головна проблема')}: {tag(main_problem(reason, edge, worst_case_after_sl, liquidity))}",
-            f"{bold('✅ Що треба для входу')}: {tag(entry_requirement(decision, reason, liquidity))}",
+            f"📌 <b>Ринок:</b> {tag(market)}",
+            f"🎯 <b>Ймовірність позитивного результату:</b> {pct(positive_probability)}",
+            f"⭐ <b>Якість угоди:</b> {tag(quality.label)}",
+            f"⚠️ <b>Головна проблема:</b> {tag(main_problem(reason, edge, worst_case_after_sl, liquidity))}",
+            f"✅ <b>Що треба для входу:</b> {tag(entry_requirement(decision, reason, liquidity))}",
             "",
-            f"{bold('🛠 Дія')}",
-            f"PM: купити {code('NO')} на {money(stake)}",
-            f"Futures: {code(hedge.side)} {hedge.size_btc:.6f} BTC",
-            f"Плече: {hedge.leverage:.1f}x isolated",
-            f"Margin: {money(hedge.isolated_margin)}",
-            f"TP: {money(hedge.take_profit)} | SL: {money(hedge.stop_loss)}",
+            "🛠 <b>План дії</b>",
+            f"• PM: купити {code('NO')} на <b>{money(stake)}</b>",
+            f"• Futures: {code(hedge.side)} <b>{hedge.size_btc:.6f} BTC</b>",
+            f"• Плече: <b>{hedge.leverage:.1f}x isolated</b>",
+            f"• Margin: <b>{money(hedge.isolated_margin)}</b>",
+            f"• TP / SL: <b>{money(hedge.take_profit)}</b> / <b>{money(hedge.stop_loss)}</b>",
             "",
-            f"{bold('📊 Ризик і edge')}",
-            f"Touch: {pct(edge.fair_touch)} | Fair NO: {pct(edge.fair_no)}",
-            f"NO price: {edge.no_price:.3f} | Edge: {pct(edge.true_edge)}",
-            f"Net upside: {money(quality.net_upside)} | Reward/Risk: {quality.reward_risk:.2f}",
-            f"Worst-case: {money(worst_case_after_sl)}",
-            f"SL loss: {money(hedge.expected_sl_loss)}",
+            "📊 <b>Risk / Edge</b>",
+            f"• Touch: <b>{pct(edge.fair_touch)}</b> | Fair NO: <b>{pct(edge.fair_no)}</b>",
+            f"• NO price: <b>{edge.no_price:.3f}</b> | Edge: <b>{pct(edge.true_edge)}</b>",
+            f"• Net upside: <b>{money(quality.net_upside)}</b> | Reward/Risk: <b>{quality.reward_risk:.2f}</b>",
+            f"• Worst-case: <b>{money(worst_case_after_sl)}</b>",
+            f"• SL loss: <b>{money(hedge.expected_sl_loss)}</b>",
             "",
-            f"{bold('💰 Чисті сценарії')}",
-            f"touch + TP: {money(costs.net_touch_with_hedge_tp)}",
-            f"SL + NO wins: {money(costs.net_no_win_after_hedge_sl)}",
-            f"SL + touch: {money(costs.net_touch_after_hedge_sl_loss)}",
+            "💰 <b>Чисті сценарії</b>",
+            f"• touch + TP: <b>{money(costs.net_touch_with_hedge_tp)}</b>",
+            f"• SL + NO wins: <b>{money(costs.net_no_win_after_hedge_sl)}</b>",
+            f"• SL + touch: <b>{money(costs.net_touch_after_hedge_sl_loss)}</b>",
+            f"• Funding: <b>{money(costs.funding_cost)}</b>",
             "",
-            f"{bold('🔎 Службово')}",
-            f"Причина: {tag(ua_reason(reason))}",
-            f"Ліквідність: {tag(ua_reason(liquidity.reason))}",
+            "🔎 <b>Службово</b>",
+            f"• Причина: {tag(ua_reason(reason))}",
+            f"• Ліквідність: {tag(ua_reason(liquidity.reason))}",
         ]
     )
 
@@ -96,9 +106,9 @@ def render_analyze_card(
 def render_scout_cards(opportunities: list[Opportunity], top: int) -> str:
     shown = opportunities[:top]
     parts = [
-        f"{bold('🔍 Сканер угод')}",
-        f"Проскановано: {len(opportunities)} | Показую: {len(shown)}",
-        "Нижче — найкращі кандидати за поточними фільтрами.",
+        "🔍 <b>Сканер угод</b>",
+        f"Проскановано: <b>{len(opportunities)}</b> | Показую: <b>{len(shown)}</b>",
+        "Нижче найкращі кандидати за поточними фільтрами.",
     ]
 
     for index, opportunity in enumerate(shown, start=1):
@@ -106,32 +116,33 @@ def render_scout_cards(opportunities: list[Opportunity], top: int) -> str:
         edge = opportunity.edge
         hedge = opportunity.hedge
         costs = opportunity.costs
+        positive_probability = positive_result_probability(edge, costs)
         parts.extend(
             [
                 "",
                 divider(),
-                f"{bold(str(index) + '. ' + status_badge(opportunity.decision))} | score {opportunity.score:.1f}",
-                f"{tag(candidate.slug)}",
+                f"<b>{index}. {tag(status_badge(opportunity.decision))}</b> | score <b>{opportunity.score:.1f}</b>",
+                f"{code(candidate.slug)}",
                 "",
-                f"{bold('🧭 Висновок')}: {tag(action_label(opportunity.decision))}.",
-                f"{tag(beginner_summary(opportunity.decision))}",
-                f"{bold('🎯 Ймовірність NO wins')}: {pct(edge.fair_no)}",
-                f"{bold('⭐ Якість угоди')}: {tag(opportunity.quality.label)}",
-                f"{bold('⚠️ Проблема')}: {tag(main_problem(opportunity.reason, edge, opportunity.worst_case_after_sl, opportunity.liquidity))}",
-                f"{bold('✅ Для входу')}: {tag(entry_requirement(opportunity.decision, opportunity.reason, opportunity.liquidity))}",
+                f"🧭 <b>Висновок:</b> {tag(action_label(opportunity.decision)).capitalize()}.",
+                tag(beginner_summary(opportunity.decision)),
+                f"🎯 <b>Ймовірність позитивного результату:</b> {pct(positive_probability)}",
+                f"⭐ <b>Якість угоди:</b> {tag(opportunity.quality.label)}",
+                f"⚠️ <b>Проблема:</b> {tag(main_problem(opportunity.reason, edge, opportunity.worst_case_after_sl, opportunity.liquidity))}",
+                f"✅ <b>Для входу:</b> {tag(entry_requirement(opportunity.decision, opportunity.reason, opportunity.liquidity))}",
                 "",
-                f"{bold('🛠 Дія')}",
-                f"PM: купити {code('NO')} на {money(candidate.stake)} -> {opportunity.pm_shares:.2f} shares",
-                f"Futures: {code(hedge.side)} {hedge.size_btc:.6f} BTC | {hedge.leverage:.1f}x isolated",
-                f"Margin: {money(hedge.isolated_margin)}",
-                f"TP: {money(hedge.take_profit)} | SL: {money(hedge.stop_loss)}",
+                "🛠 <b>Дія</b>",
+                f"• PM: купити {code('NO')} на <b>{money(candidate.stake)}</b> -> <b>{opportunity.pm_shares:.2f}</b> shares",
+                f"• Futures: {code(hedge.side)} <b>{hedge.size_btc:.6f} BTC</b> | <b>{hedge.leverage:.1f}x isolated</b>",
+                f"• Margin: <b>{money(hedge.isolated_margin)}</b>",
+                f"• TP / SL: <b>{money(hedge.take_profit)}</b> / <b>{money(hedge.stop_loss)}</b>",
                 "",
-                f"{bold('📊 Ключові цифри')}",
-                f"Touch: {pct(edge.fair_touch)} | Fair NO: {pct(edge.fair_no)} | Edge: {pct(edge.true_edge)}",
-                f"Net upside: {money(opportunity.quality.net_upside)} | Reward/Risk: {opportunity.quality.reward_risk:.2f}",
-                f"Worst-case: {money(opportunity.worst_case_after_sl)}",
-                f"Net: TP {money(costs.net_touch_with_hedge_tp)} | NO wins {money(costs.net_no_win_after_hedge_sl)} | touch {money(costs.net_touch_after_hedge_sl_loss)}",
-                f"Ліквідність: {tag(ua_reason(opportunity.liquidity.reason))}",
+                "📊 <b>Ключові цифри</b>",
+                f"• Touch: <b>{pct(edge.fair_touch)}</b> | Fair NO: <b>{pct(edge.fair_no)}</b> | Edge: <b>{pct(edge.true_edge)}</b>",
+                f"• Net upside: <b>{money(opportunity.quality.net_upside)}</b> | Reward/Risk: <b>{opportunity.quality.reward_risk:.2f}</b>",
+                f"• Worst-case: <b>{money(opportunity.worst_case_after_sl)}</b>",
+                f"• Net: TP <b>{money(costs.net_touch_with_hedge_tp)}</b> | NO wins <b>{money(costs.net_no_win_after_hedge_sl)}</b> | touch <b>{money(costs.net_touch_after_hedge_sl_loss)}</b>",
+                f"• Ліквідність: {tag(ua_reason(opportunity.liquidity.reason))}",
             ]
         )
 

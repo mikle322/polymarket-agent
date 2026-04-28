@@ -1,3 +1,4 @@
+import html
 import json
 import threading
 from datetime import datetime, timezone
@@ -30,47 +31,61 @@ def render_scanner_status() -> str:
     status = load_scanner_status()
     if status is None:
         return (
-            "СТАТУС БОТА\n\n"
-            "Scanner ще не записав жодного статусу.\n"
-            "Якщо бот щойно запущений, зачекай 1-2 хвилини."
+            "🤖 <b>Статус бота</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "🟡 Scanner ще не записав жодного статусу.\n"
+            "Зачекай 1-2 хвилини після запуску VPS-сервісу."
         )
 
     ok = bool(status.get("ok"))
-    state = "Працює" if ok else "Є помилка"
+    state_icon = "🟢" if ok else "🔴"
+    state_text = "Працює" if ok else "Є помилка"
+    source = esc(status.get("source", "n/a"))
+
     lines = [
-        "СТАТУС БОТА",
+        "🤖 <b>Статус бота</b>",
+        "━━━━━━━━━━━━━━━━",
         "",
-        f"Стан: {state}",
-        f"Останній scan старт: {status.get('started_at', 'n/a')}",
-        f"Останній scan кінець: {status.get('finished_at', 'n/a')}",
-        f"Джерело: {status.get('source', 'n/a')}",
-        f"Інтервал: {status.get('interval_seconds', 'n/a')}s",
+        f"{state_icon} <b>Стан:</b> {state_text}",
+        f"🕒 <b>Останній scan:</b> {short_time(status.get('finished_at'))}",
+        f"📡 <b>Джерело:</b> {source}",
+        f"⏱ <b>Інтервал:</b> {status.get('interval_seconds', 'n/a')}s",
         "",
-        "РЕЗУЛЬТАТ ОСТАННЬОГО SCAN:",
-        f"Перевірено можливостей: {status.get('scanned', 'n/a')}",
-        f"Пройшли фільтри: {status.get('matched', 'n/a')}",
-        f"Надіслано alerts: {status.get('sent', 'n/a')}",
-        f"Записано пропущених: {status.get('skipped_logged', 'n/a')}",
+        "📊 <b>Результат останнього scan</b>",
+        f"• Перевірено ринків: <b>{status.get('scanned', 'n/a')}</b>",
+        f"• Пройшли фільтри: <b>{status.get('matched', 'n/a')}</b>",
+        f"• Надіслано alerts: <b>{status.get('sent', 'n/a')}</b>",
+        f"• Записано пропущених: <b>{status.get('skipped_logged', 'n/a')}</b>",
         "",
-        "LIVE ДАНІ:",
-        f"BTC price input: {format_optional_number(status.get('btc_price'))}",
-        f"IV input: {format_optional_percent(status.get('iv'))}",
-        f"Funding input: {format_optional_percent(status.get('funding_rate'))}",
+        "📈 <b>Live data</b>",
+        f"• BTC: <b>{format_optional_number(status.get('btc_price'))}</b>",
+        f"• IV: <b>{format_optional_percent(status.get('iv'))}</b>",
+        f"• Funding: <b>{format_optional_percent(status.get('funding_rate'))}</b>",
         "",
-        "ФІЛЬТРИ:",
-        f"Decision: {status.get('min_decision', 'n/a')}",
-        f"Min score: {status.get('min_score', 'n/a')}",
-        f"Min edge: {format_optional_percent(status.get('min_edge'))}",
-        f"Min NO wins probability: {format_optional_percent(status.get('min_positive_probability'))}",
-        f"Min net upside: ${float(status.get('min_net_upside', 0.0)):.2f}",
-        f"Min reward/risk: {status.get('min_reward_risk', 'n/a')}",
+        "🎚 <b>Фільтри входу</b>",
+        f"• Decision: <code>{esc(status.get('min_decision', 'n/a'))}</code>",
+        f"• Min score: <b>{status.get('min_score', 'n/a')}</b>",
+        f"• Min edge: <b>{format_optional_percent(status.get('min_edge'))}</b>",
+        f"• Min NO wins: <b>{format_optional_percent(status.get('min_positive_probability'))}</b>",
+        f"• Min net upside: <b>${float(status.get('min_net_upside', 0.0)):.2f}</b>",
+        f"• Min reward/risk: <b>{status.get('min_reward_risk', 'n/a')}</b>",
     ]
 
     error = status.get("error")
     if error:
-        lines.extend(["", "ОСТАННЯ ПОМИЛКА:", str(error)])
+        lines.extend(["", "⚠️ <b>Остання помилка</b>", esc(error)])
 
     return "\n".join(lines)
+
+
+def esc(value: Any) -> str:
+    return html.escape(str(value))
+
+
+def short_time(value: Any) -> str:
+    if not value:
+        return "n/a"
+    return esc(str(value).replace("T", " ").replace("+00:00", " UTC"))
 
 
 def format_optional_number(value: Any) -> str:
@@ -79,7 +94,7 @@ def format_optional_number(value: Any) -> str:
     try:
         return f"{float(value):,.2f}"
     except (TypeError, ValueError):
-        return str(value)
+        return esc(value)
 
 
 def format_optional_percent(value: Any) -> str:
@@ -88,4 +103,4 @@ def format_optional_percent(value: Any) -> str:
     try:
         return f"{float(value) * 100:.2f}%"
     except (TypeError, ValueError):
-        return str(value)
+        return esc(value)

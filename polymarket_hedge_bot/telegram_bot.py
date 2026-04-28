@@ -166,7 +166,7 @@ class TelegramBot:
         is_html = response.html if isinstance(response, TelegramResponse) else False
         chunks = split_message(text)
         for index, chunk in enumerate(chunks):
-            body = chunk if is_html else f"<pre>{html.escape(chunk)}</pre>"
+            body = chunk if is_html else html.escape(chunk)
             self.send_message(
                 chat_id,
                 body,
@@ -206,27 +206,27 @@ def handle_text_command(text: str) -> TelegramResponse:
     if text in {"/start", "/menu"}:
         return main_menu_response()
     if text == "/help":
-        return TelegramResponse(HELP_TEXT, reply_markup=main_menu_keyboard())
+        return TelegramResponse(render_help_card(), reply_markup=main_menu_keyboard(), html=True)
     if text == "/ping":
-        return TelegramResponse("pong")
+        return TelegramResponse("🟢 <b>pong</b>\n\nTelegram listener працює.", html=True)
     if text == "/status":
-        return TelegramResponse(render_scanner_status())
+        return TelegramResponse(render_scanner_status(), html=True)
     if text == "/last_skips":
-        return TelegramResponse(render_last_skips())
+        return TelegramResponse(render_last_skips(), html=True)
     if text == "/review_skips":
-        return TelegramResponse(review_skips())
+        return TelegramResponse(review_skips(), html=True)
     if text == "/journal":
-        return TelegramResponse(journal_summary())
+        return TelegramResponse(render_journal_card(), html=True)
     if text.startswith("/close"):
-        return TelegramResponse(handle_close_command(text))
+        return TelegramResponse(handle_close_command(text), html=True)
 
     try:
         argv = telegram_text_to_cli_args(text)
     except ValueError as exc:
-        return TelegramResponse(f"Command error: {exc}\n\n{HELP_TEXT}")
+        return TelegramResponse(f"⚠️ <b>Помилка команди</b>\n\n{html.escape(str(exc))}", reply_markup=main_menu_keyboard(), html=True)
 
     if not argv:
-        return TelegramResponse(HELP_TEXT)
+        return main_menu_response()
 
     if argv[0] == "analyze":
         return run_analyze_with_buttons(argv)
@@ -562,6 +562,372 @@ def split_message(text: str, limit: int = 3900) -> list[str]:
     if remaining:
         chunks.append(remaining)
     return chunks
+
+
+def render_help_card() -> str:
+    return (
+        "✨ <b>Polymarket Hedge Bot</b>\n"
+        "━━━━━━━━━━━━━━━━\n\n"
+        "Я шукаю hedge-угоди: <b>Polymarket NO</b> + <b>futures hedge</b>, рахую risk, edge, funding, fee, ліквідність і даю зрозумілий висновок.\n\n"
+        "🧭 <b>Основне</b>\n"
+        "• <code>/menu</code> — кнопкова панель\n"
+        "• <code>/status</code> — стан scanner\n"
+        "• <code>/journal</code> — журнал угод\n"
+        "• <code>/last_skips</code> — пропущені угоди\n"
+        "• <code>/review_skips</code> — перевірити пропущені після дедлайну\n\n"
+        "⚙️ <b>Ручні команди</b>\n"
+        "• <code>/scout ...</code>\n"
+        "• <code>/analyze ...</code>\n"
+        "• <code>/monitor ...</code>\n"
+        "• <code>/pm_liquidity ...</code>\n\n"
+        "Трейдинговий сленг <b>WATCH / SKIP / ENTER / NO / LONG / SHORT / TP / SL / edge / funding</b> залишаю як є."
+    )
+
+
+def render_journal_card(limit: int = 10) -> str:
+    from polymarket_hedge_bot.journal import load_trades
+
+    trades = load_trades()
+    open_trades = [trade for trade in trades if trade.status == "OPEN"]
+    closed = [trade for trade in trades if trade.status == "CLOSED"]
+    realized = [trade.realized_pnl for trade in closed if trade.realized_pnl is not None]
+    total_pnl = sum(realized)
+    wins = sum(1 for pnl in realized if pnl > 0)
+    losses = sum(1 for pnl in realized if pnl < 0)
+    winrate = wins / len(realized) if realized else None
+
+    lines = [
+        "📒 <b>Журнал угод</b>",
+        "━━━━━━━━━━━━━━━━",
+        f"• Всього входів: <b>{len(trades)}</b>",
+        f"• Відкриті: <b>{len(open_trades)}</b>",
+        f"• Закриті: <b>{len(closed)}</b>",
+        f"• Realized PnL: <b>{money(total_pnl)}</b>",
+        f"• Winrate: <b>{winrate * 100:.1f}%</b>" if winrate is not None else "• Winrate: <b>ще немає закритих угод</b>",
+        f"• Wins / Losses: <b>{wins}</b> / <b>{losses}</b>",
+        "",
+        f"🧾 <b>Останні {min(limit, len(trades))} угод</b>",
+    ]
+
+    if not trades:
+        lines.append("Поки немає записів. Натисни <b>✅ Зайшов</b> під сигналом, коли реально входиш в угоду.")
+        return "\n".join(lines)
+
+    for trade in trades[-limit:][::-1]:
+        icon = "🟢" if trade.status == "OPEN" else "✅"
+        pnl = "" if trade.realized_pnl is None else f" | PnL <b>{money(trade.realized_pnl)}</b>"
+        lines.extend(
+            [
+                "",
+                f"{icon} <code>{html.escape(trade.trade_id)}</code> | <b>{html.escape(trade.status)}</b>",
+                f"• {html.escape(trade.decision)} | шанс: <b>{trade.positive_probability * 100:.1f}%</b>{pnl}",
+                f"• {html.escape(trade.title)}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def main_menu_keyboard() -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [{"text": "🤖 Бот", "callback_data": "menu:bot"}, {"text": "🔎 Сканер", "callback_data": "menu:scanner"}],
+            [{"text": "🧩 Пропущені угоди", "callback_data": "menu:skips"}],
+            [{"text": "📒 Журнал", "callback_data": "menu:journal"}, {"text": "✨ Довідка", "callback_data": "menu:help"}],
+        ]
+    }
+
+
+def bot_menu_keyboard() -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [{"text": "📡 Статус", "callback_data": "menu:bot_status"}, {"text": "🟢 Ping", "callback_data": "menu:bot_ping"}],
+            [{"text": "🔄 Рестарт", "callback_data": "menu:bot_restart"}, {"text": "⏸ Стоп", "callback_data": "menu:bot_stop"}],
+            [{"text": "⬅️ Назад", "callback_data": "menu:main"}],
+        ]
+    }
+
+
+def scanner_menu_keyboard() -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [{"text": "📡 Статус scanner", "callback_data": "menu:scanner_status"}],
+            [{"text": "🧩 Пропущені угоди", "callback_data": "menu:skips"}],
+            [{"text": "⬅️ Назад", "callback_data": "menu:main"}],
+        ]
+    }
+
+
+def skips_menu_keyboard() -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [{"text": "🕘 Останні", "callback_data": "menu:skips_last"}, {"text": "🔍 Review зараз", "callback_data": "menu:skips_review"}],
+            [{"text": "🔴 Повний мінус", "callback_data": "menu:skips_loss"}],
+            [{"text": "⚪ Біля нуля", "callback_data": "menu:skips_flat"}, {"text": "🟢 Макс плюс", "callback_data": "menu:skips_win"}],
+            [{"text": "⏳ Ще не закрились", "callback_data": "menu:skips_pending"}],
+            [{"text": "⬅️ Назад", "callback_data": "menu:main"}],
+        ]
+    }
+
+
+def journal_menu_keyboard() -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [{"text": "🔄 Оновити журнал", "callback_data": "menu:journal"}],
+            [{"text": "🧾 Як закрити угоду", "callback_data": "menu:journal_help"}],
+            [{"text": "⬅️ Назад", "callback_data": "menu:main"}],
+        ]
+    }
+
+
+def main_menu_response() -> TelegramResponse:
+    return TelegramResponse(
+        "🏠 <b>Головне меню</b>\n"
+        "━━━━━━━━━━━━━━━━\n\n"
+        "Обери розділ нижче. Кнопками швидше і менше плутанини, а ручні команди теж залишаються доступними.",
+        reply_markup=main_menu_keyboard(),
+        html=True,
+    )
+
+
+def entered_keyboard(signal_id: str) -> dict[str, Any]:
+    return {"inline_keyboard": [[{"text": "✅ Зайшов в угоду", "callback_data": f"entered:{signal_id}"}]]}
+
+
+def handle_text_command(text: str) -> TelegramResponse:
+    if text in {"/start", "/menu"}:
+        return main_menu_response()
+    if text == "/help":
+        return TelegramResponse(render_help_card(), reply_markup=main_menu_keyboard(), html=True)
+    if text == "/ping":
+        return TelegramResponse("🟢 <b>pong</b>\n\nTelegram listener працює.", reply_markup=bot_menu_keyboard(), html=True)
+    if text == "/status":
+        return TelegramResponse(render_scanner_status(), reply_markup=bot_menu_keyboard(), html=True)
+    if text == "/last_skips":
+        return TelegramResponse(render_last_skips(), reply_markup=skips_menu_keyboard(), html=True)
+    if text == "/review_skips":
+        return TelegramResponse(review_skips(), reply_markup=skips_menu_keyboard(), html=True)
+    if text == "/journal":
+        return TelegramResponse(render_journal_card(), reply_markup=journal_menu_keyboard(), html=True)
+    if text.startswith("/close"):
+        return TelegramResponse(render_close_command(text), reply_markup=journal_menu_keyboard(), html=True)
+
+    try:
+        argv = telegram_text_to_cli_args(text)
+    except ValueError as exc:
+        return TelegramResponse(
+            f"⚠️ <b>Команда не розпізнана</b>\n\n{html.escape(str(exc))}\n\nВідкрий /menu, там усе під кнопками.",
+            reply_markup=main_menu_keyboard(),
+            html=True,
+        )
+
+    if not argv:
+        return main_menu_response()
+
+    if argv[0] == "analyze":
+        return run_analyze_with_buttons(argv)
+    if argv[0] == "scout":
+        return run_scout_with_buttons(argv)
+    return TelegramResponse(f"🧾 <b>Результат команди</b>\n━━━━━━━━━━━━━━━━\n\n{html.escape(run_cli(argv))}", html=True)
+
+
+def handle_menu_callback(data: str) -> TelegramResponse:
+    action = data.split(":", 1)[1]
+    if action == "main":
+        return main_menu_response()
+    if action == "bot":
+        return TelegramResponse(
+            "🤖 <b>Бот</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "Операційна панель для VPS-бота: статус, ping, restart і stop-підказки.",
+            reply_markup=bot_menu_keyboard(),
+            html=True,
+        )
+    if action == "bot_status":
+        return TelegramResponse(render_scanner_status(), reply_markup=bot_menu_keyboard(), html=True)
+    if action == "bot_ping":
+        return TelegramResponse("🟢 <b>pong</b>\n\nTelegram listener відповідає.", reply_markup=bot_menu_keyboard(), html=True)
+    if action == "bot_restart":
+        return TelegramResponse(
+            "🔄 <b>Рестарт бота</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "Безпечний варіант зараз — через VPS або GitHub auto-deploy.\n\n"
+            "VPS команда:\n<code>systemctl restart polymarket-bot</code>\n\n"
+            "GitHub варіант: зроби <code>git push</code>, і Actions сам оновить та перезапустить сервіс.",
+            reply_markup=bot_menu_keyboard(),
+            html=True,
+        )
+    if action == "bot_stop":
+        return TelegramResponse(
+            "⏸ <b>Стоп бота</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "Я не ставлю прямий stop без підтвердження, щоб випадково не вимкнути 24/7 monitoring.\n\n"
+            "Зупинити:\n<code>systemctl stop polymarket-bot</code>\n\n"
+            "Запустити назад:\n<code>systemctl start polymarket-bot</code>",
+            reply_markup=bot_menu_keyboard(),
+            html=True,
+        )
+    if action == "scanner":
+        return TelegramResponse(
+            "🔎 <b>Сканер</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "Тут зібрані дії для live scanner: статус, пропущені угоди та review результатів.",
+            reply_markup=scanner_menu_keyboard(),
+            html=True,
+        )
+    if action == "scanner_status":
+        return TelegramResponse(render_scanner_status(), reply_markup=scanner_menu_keyboard(), html=True)
+    if action == "skips":
+        return TelegramResponse(
+            "🧩 <b>Пропущені угоди</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "Тут бот збирає угоди, які ми не взяли. Після дедлайну він перевіряє, чи були вони прибутковими, і розкладає їх по категоріях.",
+            reply_markup=skips_menu_keyboard(),
+            html=True,
+        )
+    if action == "skips_last":
+        return TelegramResponse(render_last_skips(), reply_markup=skips_menu_keyboard(), html=True)
+    if action == "skips_review":
+        return TelegramResponse(review_skips(), reply_markup=skips_menu_keyboard(), html=True)
+    if action == "skips_loss":
+        return TelegramResponse(render_skips_bucket("loss"), reply_markup=skips_menu_keyboard(), html=True)
+    if action == "skips_flat":
+        return TelegramResponse(render_skips_bucket("flat"), reply_markup=skips_menu_keyboard(), html=True)
+    if action == "skips_win":
+        return TelegramResponse(render_skips_bucket("win"), reply_markup=skips_menu_keyboard(), html=True)
+    if action == "skips_pending":
+        return TelegramResponse(render_skips_bucket("pending"), reply_markup=skips_menu_keyboard(), html=True)
+    if action == "journal":
+        return TelegramResponse(render_journal_card(), reply_markup=journal_menu_keyboard(), html=True)
+    if action == "journal_help":
+        return TelegramResponse(
+            "📒 <b>Як працює журнал</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "Коли ти натискаєш <b>✅ Зайшов в угоду</b> під сигналом, бот записує її в журнал.\n\n"
+            "Після закриття внеси результат:\n"
+            "<code>/close trade_id --pnl 42.5 --note \"коментар\"</code>\n\n"
+            "Так ми будемо бачити реальну статистику стратегії, а не тільки теоретичні сигнали.",
+            reply_markup=journal_menu_keyboard(),
+            html=True,
+        )
+    if action == "help":
+        return TelegramResponse(render_help_card(), reply_markup=main_menu_keyboard(), html=True)
+    return TelegramResponse("⚠️ Невідомий пункт меню.", reply_markup=main_menu_keyboard(), html=True)
+
+
+def render_close_command(text: str) -> str:
+    parser = argparse.ArgumentParser(prog="/close")
+    parser.add_argument("command")
+    parser.add_argument("trade_id")
+    parser.add_argument("--pnl", type=float, required=True)
+    parser.add_argument("--note")
+
+    try:
+        args = parser.parse_args(shlex.split(text))
+        trade = close_trade(args.trade_id, args.pnl, args.note)
+    except SystemExit:
+        return (
+            "⚠️ <b>Не вистачає даних</b>\n\n"
+            "Формат:\n<code>/close &lt;trade_id&gt; --pnl &lt;amount&gt; --note \"optional note\"</code>"
+        )
+    except Exception as exc:
+        return f"⚠️ <b>Не вдалося закрити угоду</b>\n\n{html.escape(str(exc))}"
+
+    return (
+        "✅ <b>Угоду закрито</b>\n"
+        "━━━━━━━━━━━━━━━━\n\n"
+        f"• Trade ID: <code>{html.escape(trade.trade_id)}</code>\n"
+        f"• Ринок: {html.escape(trade.title)}\n"
+        f"• Realized PnL: <b>{money(trade.realized_pnl or 0.0)}</b>\n\n"
+        f"{render_journal_card()}"
+    )
+
+
+def _pretty_handle_callback(self: TelegramBot, callback: dict[str, Any]) -> None:
+    data = str(callback.get("data") or "")
+    callback_id = str(callback.get("id") or "")
+    message = callback.get("message") or {}
+    chat = message.get("chat") or {}
+    chat_id = str(chat.get("id", ""))
+
+    if self.allowed_chat_id and chat_id != self.allowed_chat_id:
+        self.answer_callback(callback_id, "Access denied")
+        return
+
+    if data.startswith("menu:"):
+        self.answer_callback(callback_id, "OK")
+        self.send_report(chat_id, handle_menu_callback(data))
+        return
+
+    if data.startswith("entered:"):
+        signal_id = data.split(":", 1)[1]
+        try:
+            trade = record_entry(signal_id)
+        except Exception as exc:
+            self.answer_callback(callback_id, f"Помилка: {exc}")
+            return
+        self.answer_callback(callback_id, "Записано в журнал")
+        self.send_report(
+            chat_id,
+            TelegramResponse(
+                text=(
+                    "✅ <b>Угоду записано в журнал</b>\n"
+                    "━━━━━━━━━━━━━━━━\n\n"
+                    f"• Trade ID: <code>{html.escape(trade.trade_id)}</code>\n"
+                    f"• Сигнал: {html.escape(trade.title)}\n"
+                    f"• Рішення на вході: <b>{html.escape(trade.decision)}</b>\n"
+                    f"• Ймовірність позитивного результату: <b>{trade.positive_probability * 100:.1f}%</b>\n\n"
+                    "Після закриття внеси результат командою:\n"
+                    f"<code>/close {html.escape(trade.trade_id)} --pnl 42.5 --note \"коментар\"</code>"
+                ),
+                reply_markup=journal_menu_keyboard(),
+                html=True,
+            ),
+        )
+        return
+
+    self.answer_callback(callback_id, "Невідома дія")
+
+
+TelegramBot.handle_callback = _pretty_handle_callback
+
+
+def run_scout_with_buttons(argv: list[str]) -> TelegramResponse:
+    parser = cli.build_parser()
+    args = parser.parse_args(argv)
+    config = cli.build_config(args)
+    candidates = load_candidates(args.candidates, default_stake=args.stake)
+    opportunities = scout_candidates(
+        candidates,
+        config,
+        max_futures_margin=args.max_futures_margin,
+        use_live_orderbook=args.live_orderbook,
+        max_slippage=args.max_slippage,
+    )
+    shown = opportunities[: args.top]
+    text = render_scout_cards(opportunities, args.top)
+    buttons = []
+    for index, opportunity in enumerate(shown, start=1):
+        signal = create_signal(
+            kind="scout",
+            title=opportunity.candidate.slug,
+            decision=opportunity.decision,
+            positive_probability=positive_result_probability(opportunity.edge, opportunity.costs),
+            payload={
+                "command": argv,
+                "rank": index,
+                "slug": opportunity.candidate.slug,
+                "stake": opportunity.candidate.stake,
+                "decision": opportunity.decision,
+                "edge": opportunity.edge.true_edge,
+                "positive_probability": positive_result_probability(opportunity.edge, opportunity.costs),
+                "futures_side": opportunity.hedge.side,
+                "futures_size_btc": opportunity.hedge.size_btc,
+                "futures_leverage": opportunity.hedge.leverage,
+                "worst_case_after_sl": opportunity.worst_case_after_sl,
+            },
+        )
+        buttons.append([{"text": f"✅ Зайшов #{index}", "callback_data": f"entered:{signal.signal_id}"}])
+    return TelegramResponse(text=text, reply_markup={"inline_keyboard": buttons} if buttons else None, html=True)
 
 
 def build_parser() -> argparse.ArgumentParser:

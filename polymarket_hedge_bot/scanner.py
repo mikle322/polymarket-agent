@@ -384,7 +384,7 @@ def run_scanner_loop(
                 review_text = render_review_summary(review_summary)
                 safe_print(review_text)
                 if bot is not None and chat_id is not None:
-                    bot.send_report(chat_id, TelegramResponse(text=review_text))
+                    bot.send_report(chat_id, TelegramResponse(text=review_text, html=True))
             if not dry_run:
                 save_state(state)
             write_scan_status(

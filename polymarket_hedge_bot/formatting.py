@@ -34,8 +34,8 @@ def ua_reason(reason: str) -> str:
         "no usable ask liquidity": "немає придатної ask-ліквідності",
         "live orderbook requested, but candidate has no no_token_id": "увімкнено live orderbook, але кандидат не має no_token_id",
         "do not enter": "не входити",
-        "reduce stake, reduce coverage, or plan partial PM exit after SL": "зменшити stake, зменшити coverage або запланувати partial PM exit після SL",
-        "after SL: re-hedge once, partial exit, full exit, or freeze + alert": "після SL: один re-hedge, partial exit, full exit або freeze + alert",
+        "reduce stake, reduce coverage, or plan partial PM exit after SL": "зменшити stake, coverage або запланувати partial PM exit після SL",
+        "after SL: re-hedge once, partial exit, full exit, or freeze + alert": "після SL: re-hedge, partial exit, full exit або freeze + alert",
         "wait for better NO price or higher distance to strike": "чекати кращу ціну NO або більшу дистанцію до strike",
         "sell enough PM exposure so broken-hedge worst-case returns inside max loss": "продати стільки PM exposure, щоб broken-hedge worst-case повернувся в max loss",
         "realized futures loss already reached or exceeded max loss": "зафіксований futures loss уже досяг або перевищив max loss",
@@ -68,7 +68,7 @@ def recommendation_text(
     if not liquidity.ok:
         return "Пропустити: ліквідність не дозволяє нормально набрати позицію."
     if decision == "ENTER":
-        return "Можна розглядати ENTER: edge достатній, risk входить у ліміт, але тільки з live liquidity check і готовим post-SL планом."
+        return "Можна розглядати ENTER: edge достатній, risk у межах ліміту. Перед входом перевірити live orderbook, funding, fee та post-SL план."
     if decision == "WATCH":
         if edge.true_edge <= 0:
             return "Не входити зараз: edge слабкий або від'ємний, краще чекати кращу ціну NO."
@@ -79,14 +79,14 @@ def recommendation_text(
         if positive_probability < 0.5:
             return "SKIP: ймовірність позитивного результату замала для такого ризику."
         return "SKIP: формально шанс є, але edge/risk/liquidity не проходять фільтри."
-    return "Немає рекомендації: невідомий стан рішення."
+    return "Потрібна додаткова перевірка."
 
 
 def action_label(decision: str) -> str:
     labels = {
-        "ENTER": "Можна розглядати вхід",
-        "WATCH": "Чекати / не входити зараз",
-        "SKIP": "Пропустити",
+        "ENTER": "можна розглядати вхід",
+        "WATCH": "спостерігати, але не входити зараз",
+        "SKIP": "пропустити",
     }
     return labels.get(decision, decision)
 
@@ -114,7 +114,7 @@ def entry_requirement(decision: str, reason: str, liquidity: LiquidityCheck) -> 
     if not liquidity.ok:
         return "Потрібна краща ліквідність або менший stake."
     if decision == "ENTER":
-        return "Перед входом перевірити live orderbook, funding, fee та post-SL план."
+        return "Перевірити live orderbook, funding, fee та post-SL план."
     if "worst-case after SL exceeds risk limit" in reason:
         return "Зменшити stake/coverage або мати чіткий partial exit після SL."
     if decision == "WATCH":
@@ -140,8 +140,8 @@ def format_analyze_report(
         f"Рішення: {decision}",
         "",
         "ВИСНОВОК:",
-        f"{action_label(decision)}.",
-        f"Ймовірність NO wins: {pct(edge.fair_no)}",
+        f"{action_label(decision).capitalize()}.",
+        f"Ймовірність позитивного результату: {pct(positive_result_probability(edge, costs))}",
         f"Головна проблема: {main_problem(reason, edge, worst_case_after_sl, liquidity)}",
         f"Що треба для входу: {entry_requirement(decision, reason, liquidity)}",
         "",
@@ -153,30 +153,16 @@ def format_analyze_report(
         "ДЕТАЛІ:",
         f"Причина: {ua_reason(reason)}",
         f"Рекомендація: {recommendation_text(decision, edge, costs, worst_case_after_sl, liquidity)}",
-        "",
         f"Touch probability: {pct(edge.fair_touch)}",
         f"Fair NO: {pct(edge.fair_no)}",
         f"NO entry price: {edge.no_price:.3f}",
-        f"Загальний buffer: {pct(edge.total_buffer)}",
         f"True edge: {pct(edge.true_edge)}",
-        "",
-        f"Рекомендований futures hedge: {hedge.side} {hedge.size_btc:.6f} BTC",
         f"Futures notional: {money(hedge.notional)}",
-        f"Рекомендоване плече: {hedge.leverage:.1f}x isolated",
-        f"Орієнтовна isolated margin: {money(hedge.isolated_margin)}",
-        f"TP: {money(hedge.take_profit)}",
-        f"SL: {money(hedge.stop_loss)}",
         f"Очікуваний hedge TP profit: {money(hedge.expected_tp_profit)}",
         f"Очікуваний hedge SL loss: {money(hedge.expected_sl_loss)}",
-        "",
-        f"PM fee: {money(costs.pm_fee)}",
-        f"Futures entry fee: {money(costs.futures_entry_fee)}",
-        f"Futures TP exit fee: {money(costs.futures_tp_exit_fee)}",
-        f"Futures SL exit fee: {money(costs.futures_sl_exit_fee)}",
-        f"Оцінка funding cost: {money(costs.funding_cost)}",
-        f"Загальні витрати до TP: {money(costs.total_cost_to_tp)}",
-        f"Загальні витрати до SL: {money(costs.total_cost_to_sl)}",
-        "",
+        f"Витрати до TP: {money(costs.total_cost_to_tp)}",
+        f"Витрати до SL: {money(costs.total_cost_to_sl)}",
+        f"Funding cost: {money(costs.funding_cost)}",
         f"Net якщо touch + hedge TP: {money(costs.net_touch_with_hedge_tp)}",
         f"Net якщо hedge SL, потім NO wins: {money(costs.net_no_win_after_hedge_sl)}",
         f"Net якщо hedge SL, потім touch: {money(costs.net_touch_after_hedge_sl_loss)}",
@@ -206,27 +192,27 @@ def format_scout_report(opportunities: list[Opportunity], top: int) -> str:
             [
                 f"{index}. {opportunity.decision} | score {opportunity.score:.1f} | {candidate.slug}",
                 "",
-                "   ВИСНОВОК:",
-                f"   {action_label(opportunity.decision)}.",
-                f"   Ймовірність NO wins: {pct(edge.fair_no)}",
-                f"   Головна проблема: {main_problem(opportunity.reason, edge, opportunity.worst_case_after_sl, opportunity.liquidity)}",
-                f"   Що треба для входу: {entry_requirement(opportunity.decision, opportunity.reason, opportunity.liquidity)}",
+                "ВИСНОВОК:",
+                f"{action_label(opportunity.decision).capitalize()}.",
+                f"Ймовірність позитивного результату: {pct(positive_result_probability(edge, costs))}",
+                f"Головна проблема: {main_problem(opportunity.reason, edge, opportunity.worst_case_after_sl, opportunity.liquidity)}",
+                f"Що треба для входу: {entry_requirement(opportunity.decision, opportunity.reason, opportunity.liquidity)}",
                 "",
-                "   ДІЯ:",
-                f"   PM: купити NO на {money(candidate.stake)} -> {opportunity.pm_shares:.2f} shares",
-                f"   Futures: {hedge.side} {hedge.size_btc:.6f} BTC | {hedge.leverage:.1f}x isolated | margin {money(hedge.isolated_margin)}",
-                f"   TP: {money(hedge.take_profit)} | SL: {money(hedge.stop_loss)}",
+                "ДІЯ:",
+                f"PM: купити NO на {money(candidate.stake)} -> {opportunity.pm_shares:.2f} shares",
+                f"Futures: {hedge.side} {hedge.size_btc:.6f} BTC | {hedge.leverage:.1f}x isolated | margin {money(hedge.isolated_margin)}",
+                f"TP: {money(hedge.take_profit)} | SL: {money(hedge.stop_loss)}",
                 "",
-                "   ДЕТАЛІ:",
-                f"   Питання: {candidate.question}",
-                f"   Причина: {ua_reason(opportunity.reason)}",
-                f"   Рекомендація: {recommendation_text(opportunity.decision, edge, costs, opportunity.worst_case_after_sl, opportunity.liquidity)}",
-                f"   Touch: {pct(edge.fair_touch)} | Fair NO: {pct(edge.fair_no)} | NO: {edge.no_price:.3f} | Edge: {pct(edge.true_edge)}",
+                "ДЕТАЛІ:",
+                f"Питання: {candidate.question}",
+                f"Причина: {ua_reason(opportunity.reason)}",
+                f"Рекомендація: {recommendation_text(opportunity.decision, edge, costs, opportunity.worst_case_after_sl, opportunity.liquidity)}",
+                f"Touch: {pct(edge.fair_touch)} | Fair NO: {pct(edge.fair_no)} | NO: {edge.no_price:.3f} | Edge: {pct(edge.true_edge)}",
             ]
         )
         if opportunity.liquidity.vwap is not None:
             lines.append(
-                "   PM liquidity: "
+                "PM liquidity: "
                 f"best ask {opportunity.liquidity.best_ask:.3f} | "
                 f"VWAP {opportunity.liquidity.vwap:.3f} | "
                 f"worst {opportunity.liquidity.worst_price:.3f} | "
@@ -234,24 +220,13 @@ def format_scout_report(opportunities: list[Opportunity], top: int) -> str:
             )
         lines.extend(
             [
-                "   Futures детально: "
-                f"{hedge.side} {hedge.size_btc:.6f} BTC | "
-                f"notional {money(hedge.notional)} | "
-                f"{hedge.leverage:.1f}x isolated | "
-                f"margin {money(hedge.isolated_margin)}",
-                f"   TP: {money(hedge.take_profit)} | SL: {money(hedge.stop_loss)} | SL loss: {money(hedge.expected_sl_loss)}",
-                "   Витрати: "
-                f"TP path {money(costs.total_cost_to_tp)} | "
-                f"SL path {money(costs.total_cost_to_sl)} | "
-                f"funding {money(costs.funding_cost)}",
-                "   Net scenarios: "
-                f"touch+TP {money(costs.net_touch_with_hedge_tp)} | "
-                f"SL+NO wins {money(costs.net_no_win_after_hedge_sl)} | "
-                f"SL+touch {money(costs.net_touch_after_hedge_sl_loss)}",
-                f"   Якість угоди: {opportunity.quality.label} | Net upside {money(opportunity.quality.net_upside)} | Reward/Risk {opportunity.quality.reward_risk:.2f}",
-                f"   Worst-case після SL + PM touch: {money(opportunity.worst_case_after_sl)}",
-                f"   Post-SL план: {ua_reason(opportunity.post_sl_action)}",
-                f"   Ліквідність: {ua_reason(opportunity.liquidity.reason)}",
+                f"Futures: notional {money(hedge.notional)} | SL loss {money(hedge.expected_sl_loss)}",
+                f"Витрати: TP path {money(costs.total_cost_to_tp)} | SL path {money(costs.total_cost_to_sl)} | funding {money(costs.funding_cost)}",
+                f"Net scenarios: touch+TP {money(costs.net_touch_with_hedge_tp)} | SL+NO wins {money(costs.net_no_win_after_hedge_sl)} | SL+touch {money(costs.net_touch_after_hedge_sl_loss)}",
+                f"Якість: {opportunity.quality.label} | Net upside {money(opportunity.quality.net_upside)} | Reward/Risk {opportunity.quality.reward_risk:.2f}",
+                f"Worst-case після SL + PM touch: {money(opportunity.worst_case_after_sl)}",
+                f"Post-SL план: {ua_reason(opportunity.post_sl_action)}",
+                f"Ліквідність: {ua_reason(opportunity.liquidity.reason)}",
                 "",
             ]
         )
