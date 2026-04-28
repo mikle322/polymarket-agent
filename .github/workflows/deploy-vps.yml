@@ -21,6 +21,8 @@ jobs:
           VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
         run: |
+          VPS_HOST="$(printf '%s' "$VPS_HOST" | tr -d '\r\n[:space:]')"
+          VPS_PORT="$(printf '%s' "${VPS_PORT:-22}" | tr -d '\r\n[:space:]')"
           mkdir -p ~/.ssh
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
@@ -32,6 +34,9 @@ jobs:
           VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
+          VPS_HOST="$(printf '%s' "$VPS_HOST" | tr -d '\r\n[:space:]')"
+          VPS_PORT="$(printf '%s' "${VPS_PORT:-22}" | tr -d '\r\n[:space:]')"
+          VPS_USER="$(printf '%s' "$VPS_USER" | tr -d '\r\n[:space:]')"
           ssh -i ~/.ssh/deploy_key -p "$VPS_PORT" \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
@@ -54,6 +59,9 @@ jobs:
           VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
+          VPS_HOST="$(printf '%s' "$VPS_HOST" | tr -d '\r\n[:space:]')"
+          VPS_PORT="$(printf '%s' "${VPS_PORT:-22}" | tr -d '\r\n[:space:]')"
+          VPS_USER="$(printf '%s' "$VPS_USER" | tr -d '\r\n[:space:]')"
           ssh -i ~/.ssh/deploy_key -p "$VPS_PORT" \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
