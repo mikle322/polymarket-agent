@@ -1,0 +1,398 @@
+﻿import argparse
+import dataclasses
+import json
+import os
+import threading
+import time
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError, URLError
+
+from polymarket_hedge_bot.config import RiskConfig
+from polymarket_hedge_bot.connectors.binance_futures import BinanceFuturesConnector
+from polymarket_hedge_bot.connectors.deribit import DeribitConnector
+from polymarket_hedge_bot.connectors.okx_futures import OkxFuturesConnector
+from polymarket_hedge_bot.formatting import positive_result_probability
+from polymarket_hedge_bot.journal import create_signal
+from polymarket_hedge_bot.live_discovery import discover_polymarket_btc_candidates
+from polymarket_hedge_bot.scout import Opportunity, load_candidates, scout_candidates
+from polymarket_hedge_bot.telegram_bot import TelegramBot, TelegramResponse
+from polymarket_hedge_bot.telegram_views import render_scout_cards
+from polymarket_hedge_bot.utils import load_dotenv, safe_print
+
+
+SCANNER_STATE_PATH = Path("data") / "scanner_state.json"
+
+
+@dataclass(frozen=True)
+class ScannerConfig:
+    candidates: str
+    live_polymarket: bool
+    live_btc_price: float | None
+    live_iv: float | None
+    live_stake: float
+    live_pages: int
+    live_limit: int
+    live_min_liquidity: float
+    deribit_lookback_minutes: int
+    binance_symbol: str
+    okx_inst_id: str
+    interval_seconds: int
+    top: int
+    max_loss: float
+    max_futures_margin: float
+    min_decision: str
+    min_score: float
+    min_edge: float
+    min_positive_probability: float
+    cooldown_seconds: int
+    live_orderbook: bool
+    max_slippage: float
+    pm_fee_rate: float
+    futures_fee_rate: float
+    funding_rate: float | None
+    funding_periods: float
+    min_net_upside: float
+    min_reward_risk: float
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="polymarket-scanner")
+    parser.add_argument("--env-file", default=".env")
+    parser.add_argument("--candidates", default="examples/candidates.json")
+    parser.add_argument("--live-polymarket", action="store_true", help="Discover live BTC candidates from Polymarket Gamma API")
+    parser.add_argument("--btc-price", type=float, help="BTC spot price for live Polymarket discovery")
+    parser.add_argument("--iv", type=float, help="Annualized IV for live Polymarket discovery")
+    parser.add_argument("--stake", type=float, default=200.0, help="Stake for live discovered candidates")
+    parser.add_argument("--live-pages", type=int, default=3)
+    parser.add_argument("--live-limit", type=int, default=100)
+    parser.add_argument("--live-min-liquidity", type=float, default=0.0)
+    parser.add_argument("--deribit-lookback-min", type=int, default=30)
+    parser.add_argument("--binance-symbol", default="BTCUSDT")
+    parser.add_argument("--okx-inst-id", default="BTC-USDT-SWAP")
+    parser.add_argument("--interval", type=int, default=60, help="Scan interval in seconds")
+    parser.add_argument("--top", type=int, default=3)
+    parser.add_argument("--max-loss", type=float, default=200.0)
+    parser.add_argument("--max-futures-margin", type=float, default=2500.0)
+    parser.add_argument("--min-decision", choices=["WATCH", "ENTER"], default="WATCH")
+    parser.add_argument("--min-score", type=float, default=60.0)
+    parser.add_argument("--min-edge", type=float, default=0.10)
+    parser.add_argument("--min-positive-probability", type=float, default=0.60)
+    parser.add_argument("--cooldown-min", type=float, default=30.0)
+    parser.add_argument("--live-orderbook", action="store_true")
+    parser.add_argument("--max-slippage", type=float, default=0.03)
+    parser.add_argument("--pm-fee-rate", type=float, default=0.0)
+    parser.add_argument("--futures-fee-rate", type=float, default=0.0005)
+    parser.add_argument("--funding-rate", type=float)
+    parser.add_argument("--funding-periods", type=float, default=1.0)
+    parser.add_argument("--min-net-upside", type=float, default=30.0)
+    parser.add_argument("--min-reward-risk", type=float, default=0.25)
+    parser.add_argument("--once", action="store_true", help="Run one scan and exit")
+    parser.add_argument("--dry-run", action="store_true", help="Print alerts instead of sending Telegram messages")
+    return parser
+
+
+def config_from_args(args: argparse.Namespace) -> ScannerConfig:
+    return ScannerConfig(
+        candidates=args.candidates,
+        live_polymarket=args.live_polymarket,
+        live_btc_price=args.btc_price,
+        live_iv=args.iv,
+        live_stake=args.stake,
+        live_pages=args.live_pages,
+        live_limit=args.live_limit,
+        live_min_liquidity=args.live_min_liquidity,
+        deribit_lookback_minutes=args.deribit_lookback_min,
+        binance_symbol=args.binance_symbol,
+        okx_inst_id=args.okx_inst_id,
+        interval_seconds=args.interval,
+        top=args.top,
+        max_loss=args.max_loss,
+        max_futures_margin=args.max_futures_margin,
+        min_decision=args.min_decision,
+        min_score=args.min_score,
+        min_edge=args.min_edge,
+        min_positive_probability=args.min_positive_probability,
+        cooldown_seconds=int(args.cooldown_min * 60),
+        live_orderbook=args.live_orderbook,
+        max_slippage=args.max_slippage,
+        pm_fee_rate=args.pm_fee_rate,
+        futures_fee_rate=args.futures_fee_rate,
+        funding_rate=args.funding_rate,
+        funding_periods=args.funding_periods,
+        min_net_upside=args.min_net_upside,
+        min_reward_risk=args.min_reward_risk,
+    )
+
+
+def risk_config(config: ScannerConfig) -> RiskConfig:
+    funding_rate = config.funding_rate if config.funding_rate is not None else 0.0
+    return RiskConfig(
+        max_loss_per_trade=config.max_loss,
+        pm_fee_rate=config.pm_fee_rate,
+        futures_fee_rate=config.futures_fee_rate,
+        funding_rate_per_period=funding_rate,
+        funding_periods=config.funding_periods,
+        min_net_upside=config.min_net_upside,
+        min_reward_risk=config.min_reward_risk,
+    )
+
+
+def run_scan(config: ScannerConfig) -> list[Opportunity]:
+    config = with_live_binance_data(config)
+    config = with_live_deribit_iv(config)
+    if config.live_polymarket:
+        if config.live_btc_price is None:
+            raise ValueError("--btc-price is required with --live-polymarket when Binance price is unavailable")
+        if config.live_iv is None:
+            raise ValueError("--iv is required with --live-polymarket")
+        candidates = discover_polymarket_btc_candidates(
+            stake=config.live_stake,
+            btc_price=config.live_btc_price,
+            iv=config.live_iv,
+            limit=config.live_limit,
+            pages=config.live_pages,
+            min_liquidity=config.live_min_liquidity,
+        )
+    else:
+        candidates = load_candidates(config.candidates)
+    opportunities = scout_candidates(
+        candidates,
+        risk_config(config),
+        max_futures_margin=config.max_futures_margin,
+        use_live_orderbook=config.live_orderbook,
+        max_slippage=config.max_slippage,
+    )
+    return [opportunity for opportunity in opportunities if should_alert(opportunity, config)]
+
+
+def with_live_binance_data(config: ScannerConfig) -> ScannerConfig:
+    needs_price = config.live_polymarket and config.live_btc_price is None
+    needs_funding = config.live_polymarket and config.funding_rate is None
+    if not needs_price and not needs_funding:
+        return config
+
+    try:
+        connector = BinanceFuturesConnector()
+        premium = connector.premium_index(config.binance_symbol)
+        live_price = premium.mark_price
+        live_funding = premium.last_funding_rate
+    except (HTTPError, URLError, RuntimeError) as exc:
+        safe_print(f"Binance market data unavailable, using OKX fallback: {exc}")
+        try:
+            okx = OkxFuturesConnector()
+            ticker = okx.ticker(config.okx_inst_id)
+            funding = okx.funding_rate(config.okx_inst_id)
+            live_price = ticker.last
+            live_funding = funding.funding_rate
+        except (HTTPError, URLError, RuntimeError) as fallback_exc:
+            if needs_price:
+                raise RuntimeError(f"market data unavailable: {fallback_exc}") from fallback_exc
+            safe_print(f"Funding unavailable, using 0.00% fallback: {fallback_exc}")
+            live_price = config.live_btc_price
+            live_funding = 0.0
+
+    changes: dict[str, Any] = {}
+    if needs_price:
+        changes["live_btc_price"] = live_price
+    if needs_funding:
+        changes["funding_rate"] = live_funding
+    return dataclasses.replace(config, **changes)
+
+
+def with_live_deribit_iv(config: ScannerConfig) -> ScannerConfig:
+    if not config.live_polymarket or config.live_iv is not None:
+        return config
+
+    try:
+        connector = DeribitConnector()
+        vol = connector.btc_volatility_index(config.deribit_lookback_minutes)
+    except (HTTPError, URLError, RuntimeError) as exc:
+        raise RuntimeError(f"Deribit IV unavailable and --iv was not provided: {exc}") from exc
+
+    safe_print(f"Using Deribit IV: {vol.annualized_volatility * 100:.2f}%")
+    return dataclasses.replace(config, live_iv=vol.annualized_volatility)
+
+
+def should_alert(opportunity: Opportunity, config: ScannerConfig) -> bool:
+    if decision_rank(opportunity.decision) < decision_rank(config.min_decision):
+        return False
+    if opportunity.score < config.min_score:
+        return False
+    if opportunity.edge.true_edge < config.min_edge:
+        return False
+    if not opportunity.quality.ok:
+        return False
+    if positive_result_probability(opportunity.edge, opportunity.costs) < config.min_positive_probability:
+        return False
+    if not opportunity.liquidity.ok:
+        return False
+    return True
+
+
+def decision_rank(decision: str) -> int:
+    ranks = {"SKIP": 0, "WATCH": 1, "ENTER": 2}
+    return ranks.get(decision, 0)
+
+
+def send_alerts(
+    opportunities: list[Opportunity],
+    config: ScannerConfig,
+    state: dict[str, Any],
+    bot: TelegramBot | None,
+    chat_id: str | None,
+    dry_run: bool,
+) -> int:
+    sent = 0
+    now = time.time()
+
+    for opportunity in opportunities[: config.top]:
+        key = alert_key(opportunity)
+        if not should_send_again(key, opportunity, state, config, now):
+            continue
+
+        text = render_scanner_alert(opportunity)
+
+        if dry_run:
+            safe_print(text)
+        else:
+            signal = create_signal(
+                kind="scanner",
+                title=opportunity.candidate.slug,
+                decision=opportunity.decision,
+                positive_probability=positive_result_probability(opportunity.edge, opportunity.costs),
+                payload={
+                    "source": "scanner",
+                    "scanner_config": asdict(config),
+                    "slug": opportunity.candidate.slug,
+                    "stake": opportunity.candidate.stake,
+                    "decision": opportunity.decision,
+                    "score": opportunity.score,
+                    "edge": opportunity.edge.true_edge,
+                    "positive_probability": positive_result_probability(opportunity.edge, opportunity.costs),
+                    "futures_side": opportunity.hedge.side,
+                    "futures_size_btc": opportunity.hedge.size_btc,
+                    "futures_leverage": opportunity.hedge.leverage,
+                    "worst_case_after_sl": opportunity.worst_case_after_sl,
+                },
+            )
+            reply_markup = {"inline_keyboard": [[{"text": "Зайшов", "callback_data": f"entered:{signal.signal_id}"}]]}
+            if bot is None or chat_id is None:
+                raise RuntimeError("Telegram bot/chat is not configured")
+            bot.send_report(chat_id, TelegramResponse(text=text, reply_markup=reply_markup, html=True))
+
+            state[key] = {
+                "sent_at": now,
+                "score": opportunity.score,
+                "decision": opportunity.decision,
+                "edge": opportunity.edge.true_edge,
+            }
+        sent += 1
+
+    return sent
+
+
+def render_scanner_alert(opportunity: Opportunity) -> str:
+    body = render_scout_cards([opportunity], top=1)
+    return "<b>🚨 Новий сигнал від 24/7 scanner</b>\n\n" + body
+
+
+def alert_key(opportunity: Opportunity) -> str:
+    return f"{opportunity.candidate.slug}:{opportunity.decision}"
+
+
+def should_send_again(
+    key: str,
+    opportunity: Opportunity,
+    state: dict[str, Any],
+    config: ScannerConfig,
+    now: float,
+) -> bool:
+    previous = state.get(key)
+    if previous is None:
+        return True
+
+    age = now - float(previous.get("sent_at", 0))
+    score_delta = opportunity.score - float(previous.get("score", 0))
+    decision_changed = opportunity.decision != previous.get("decision")
+
+    if decision_changed:
+        return True
+    if age >= config.cooldown_seconds:
+        return True
+    if score_delta >= 10:
+        return True
+    return False
+
+
+def load_state() -> dict[str, Any]:
+    if not SCANNER_STATE_PATH.exists():
+        return {}
+    return json.loads(SCANNER_STATE_PATH.read_text(encoding="utf-8"))
+
+
+def save_state(state: dict[str, Any]) -> None:
+    SCANNER_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SCANNER_STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def build_telegram_bot(dry_run: bool) -> tuple[TelegramBot | None, str | None]:
+    if dry_run:
+        return None, None
+
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_ALLOWED_CHAT_ID")
+    if not token:
+        raise SystemExit("TELEGRAM_BOT_TOKEN is missing")
+    if not chat_id:
+        raise SystemExit("TELEGRAM_ALLOWED_CHAT_ID is missing")
+    return TelegramBot(token=token, allowed_chat_id=chat_id), chat_id
+
+
+def run_scanner_loop(
+    config: ScannerConfig,
+    bot: TelegramBot | None,
+    chat_id: str | None,
+    dry_run: bool = False,
+    once: bool = False,
+    stop_event: threading.Event | None = None,
+) -> int:
+    safe_print("24/7 scanner started")
+    safe_print(f"Source: {'live Polymarket' if config.live_polymarket else config.candidates}")
+    safe_print(f"Interval: {config.interval_seconds}s")
+    safe_print(f"Filters: min_decision={config.min_decision}, min_score={config.min_score}, min_edge={config.min_edge}")
+
+    while stop_event is None or not stop_event.is_set():
+        state = load_state()
+        try:
+            opportunities = run_scan(config)
+            sent = send_alerts(opportunities, config, state, bot, chat_id, dry_run)
+            if not dry_run:
+                save_state(state)
+            safe_print(f"Scan done: matched={len(opportunities)}, sent={sent}")
+        except Exception as exc:
+            safe_print(f"Scanner error: {exc}")
+
+        if once:
+            return 0
+        if stop_event is None:
+            time.sleep(config.interval_seconds)
+        else:
+            stop_event.wait(config.interval_seconds)
+
+    safe_print("24/7 scanner stopped")
+    return 0
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    load_dotenv(args.env_file)
+    config = config_from_args(args)
+    bot, chat_id = build_telegram_bot(args.dry_run)
+    return run_scanner_loop(config, bot, chat_id, dry_run=args.dry_run, once=args.once)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

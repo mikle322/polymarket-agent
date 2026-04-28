@@ -1,0 +1,17 @@
+[Unit]
+Description=Polymarket Hedge Bot 24/7
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=polymarket
+Group=polymarket
+WorkingDirectory=/opt/polymarket-agent
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/polymarket-agent/.venv/bin/python -m polymarket_hedge_bot.bot_runner --live-polymarket --stake 200 --live-pages 3 --live-limit 100 --live-min-liquidity 500 --live-orderbook --interval 60 --max-loss 200 --min-decision WATCH --min-score 60 --min-edge 0.10 --min-positive-probability 0.60 --min-net-upside 30 --min-reward-risk 0.25 --cooldown-min 30
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

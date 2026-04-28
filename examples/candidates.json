@@ -1,0 +1,41 @@
+[
+  {
+    "slug": "btc-80000-up-touch-example",
+    "question": "Will Bitcoin reach $80,000 before the deadline?",
+    "strike": 80000,
+    "direction": "up",
+    "deadline": "2026-05-01",
+    "btc_price": 77000,
+    "iv": 0.30,
+    "no_price": 0.57,
+    "stake": 200,
+    "spread": 0.04,
+    "liquidity": 1200
+  },
+  {
+    "slug": "btc-80000-expensive-no-example",
+    "question": "Will Bitcoin reach $80,000 before the deadline?",
+    "strike": 80000,
+    "direction": "up",
+    "deadline": "2026-05-01",
+    "btc_price": 77000,
+    "iv": 0.55,
+    "no_price": 0.57,
+    "stake": 200,
+    "spread": 0.04,
+    "liquidity": 1200
+  },
+  {
+    "slug": "btc-74000-down-touch-example",
+    "question": "Will Bitcoin reach $74,000 before the deadline?",
+    "strike": 74000,
+    "direction": "down",
+    "deadline": "2026-05-01",
+    "btc_price": 77000,
+    "iv": 0.35,
+    "no_price": 0.60,
+    "stake": 180,
+    "spread": 0.05,
+    "liquidity": 900
+  }
+]
