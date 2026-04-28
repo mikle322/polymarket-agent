@@ -22,6 +22,7 @@ from polymarket_hedge_bot.liquidity import check_basic_liquidity
 from polymarket_hedge_bot.probability import touch_probability, years_until
 from polymarket_hedge_bot.quality import calculate_quality
 from polymarket_hedge_bot.scout import load_candidates, scout_candidates
+from polymarket_hedge_bot.skip_journal import render_last_skips, render_skips_bucket, review_skips
 from polymarket_hedge_bot.status import render_scanner_status
 from polymarket_hedge_bot.telegram_views import render_analyze_card, render_scout_cards
 from polymarket_hedge_bot.utils import load_dotenv, safe_print
@@ -35,9 +36,12 @@ HELP_TEXT = """Polymarket Hedge Bot
 /monitor <args>
 /pm_liquidity <args>
 /status
+/last_skips
+/review_skips
 /journal
 /close <trade_id> --pnl <amount> --note "optional note"
 /ping
+/menu
 /help
 
 Приклади:
@@ -126,6 +130,11 @@ class TelegramBot:
             self.answer_callback(callback_id, "Access denied")
             return
 
+        if data.startswith("menu:"):
+            self.answer_callback(callback_id, "OK")
+            self.send_report(chat_id, handle_menu_callback(data))
+            return
+
         if data.startswith("entered:"):
             signal_id = data.split(":", 1)[1]
             try:
@@ -194,12 +203,18 @@ class TelegramBot:
 
 
 def handle_text_command(text: str) -> TelegramResponse:
-    if text in {"/start", "/help"}:
-        return TelegramResponse(HELP_TEXT)
+    if text in {"/start", "/menu"}:
+        return main_menu_response()
+    if text == "/help":
+        return TelegramResponse(HELP_TEXT, reply_markup=main_menu_keyboard())
     if text == "/ping":
         return TelegramResponse("pong")
     if text == "/status":
         return TelegramResponse(render_scanner_status())
+    if text == "/last_skips":
+        return TelegramResponse(render_last_skips())
+    if text == "/review_skips":
+        return TelegramResponse(review_skips())
     if text == "/journal":
         return TelegramResponse(journal_summary())
     if text.startswith("/close"):
@@ -218,6 +233,139 @@ def handle_text_command(text: str) -> TelegramResponse:
     if argv[0] == "scout":
         return run_scout_with_buttons(argv)
     return TelegramResponse(run_cli(argv))
+
+
+def handle_menu_callback(data: str) -> TelegramResponse:
+    action = data.split(":", 1)[1]
+    if action == "main":
+        return main_menu_response()
+    if action == "bot":
+        return TelegramResponse("БОТ\n\nОпераційна панель для VPS-бота.", reply_markup=bot_menu_keyboard())
+    if action == "bot_status":
+        return TelegramResponse(render_scanner_status(), reply_markup=bot_menu_keyboard())
+    if action == "bot_ping":
+        return TelegramResponse("pong\n\nTelegram listener відповідає.", reply_markup=bot_menu_keyboard())
+    if action == "bot_restart":
+        return TelegramResponse(
+            "РЕСТАРТ БОТА\n\n"
+            "Безпечний варіант зараз — через VPS або GitHub auto-deploy.\n\n"
+            "VPS команда:\n"
+            "systemctl restart polymarket-bot\n\n"
+            "GitHub варіант: зроби git push, і Actions сам перезапустить сервіс.",
+            reply_markup=bot_menu_keyboard(),
+        )
+    if action == "bot_stop":
+        return TelegramResponse(
+            "СТОП БОТА\n\n"
+            "Я не ставлю кнопку прямого stop без підтвердження, щоб випадково не вимкнути 24/7 моніторинг.\n\n"
+            "VPS команда:\n"
+            "systemctl stop polymarket-bot\n\n"
+            "Запустити назад:\n"
+            "systemctl start polymarket-bot",
+            reply_markup=bot_menu_keyboard(),
+        )
+    if action == "scanner":
+        return TelegramResponse(
+            "СКАНЕР\n\n"
+            "Тут зібрані дії для live scanner: статус, пропущені угоди, review результатів.",
+            reply_markup=scanner_menu_keyboard(),
+        )
+    if action == "scanner_status":
+        return TelegramResponse(render_scanner_status(), reply_markup=scanner_menu_keyboard())
+    if action == "skips":
+        return TelegramResponse(
+            "ПРОПУЩЕНІ УГОДИ\n\n"
+            "Категорії працюють після review, коли дедлайн минув і Polymarket закрив ринок.",
+            reply_markup=skips_menu_keyboard(),
+        )
+    if action == "skips_last":
+        return TelegramResponse(render_last_skips(), reply_markup=skips_menu_keyboard())
+    if action == "skips_review":
+        return TelegramResponse(review_skips(), reply_markup=skips_menu_keyboard())
+    if action == "skips_loss":
+        return TelegramResponse(render_skips_bucket("loss"), reply_markup=skips_menu_keyboard())
+    if action == "skips_flat":
+        return TelegramResponse(render_skips_bucket("flat"), reply_markup=skips_menu_keyboard())
+    if action == "skips_win":
+        return TelegramResponse(render_skips_bucket("win"), reply_markup=skips_menu_keyboard())
+    if action == "skips_pending":
+        return TelegramResponse(render_skips_bucket("pending"), reply_markup=skips_menu_keyboard())
+    if action == "journal":
+        return TelegramResponse(
+            journal_summary(),
+            reply_markup=journal_menu_keyboard(),
+        )
+    if action == "journal_help":
+        return TelegramResponse(
+            "ЖУРНАЛ УГОД\n\n"
+            "Коли ти натискаєш кнопку 'Зайшов' під сигналом, бот записує угоду в журнал.\n\n"
+            "Після закриття угоди внеси результат командою:\n"
+            "/close trade_id --pnl 42.5 --note \"коментар\"",
+            reply_markup=journal_menu_keyboard(),
+        )
+    if action == "help":
+        return TelegramResponse(HELP_TEXT, reply_markup=main_menu_keyboard())
+    return TelegramResponse("Невідомий пункт меню.", reply_markup=main_menu_keyboard())
+
+
+def main_menu_response() -> TelegramResponse:
+    return TelegramResponse(
+        "ГОЛОВНЕ МЕНЮ\n\n"
+        "Обери розділ нижче. Команди теж працюють, але кнопками швидше й менше плутанини.",
+        reply_markup=main_menu_keyboard(),
+    )
+
+
+def main_menu_keyboard() -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [{"text": "Бот", "callback_data": "menu:bot"}, {"text": "Сканер", "callback_data": "menu:scanner"}],
+            [{"text": "Пропущені угоди", "callback_data": "menu:skips"}],
+            [{"text": "Журнал", "callback_data": "menu:journal"}, {"text": "Довідка", "callback_data": "menu:help"}],
+        ]
+    }
+
+
+def bot_menu_keyboard() -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [{"text": "Статус", "callback_data": "menu:bot_status"}, {"text": "Ping", "callback_data": "menu:bot_ping"}],
+            [{"text": "Рестарт", "callback_data": "menu:bot_restart"}, {"text": "Стоп", "callback_data": "menu:bot_stop"}],
+            [{"text": "Назад", "callback_data": "menu:main"}],
+        ]
+    }
+
+
+def scanner_menu_keyboard() -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [{"text": "Статус scanner", "callback_data": "menu:scanner_status"}],
+            [{"text": "Пропущені угоди", "callback_data": "menu:skips"}],
+            [{"text": "Назад", "callback_data": "menu:main"}],
+        ]
+    }
+
+
+def skips_menu_keyboard() -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [{"text": "Останні", "callback_data": "menu:skips_last"}, {"text": "Review зараз", "callback_data": "menu:skips_review"}],
+            [{"text": "Повний мінус", "callback_data": "menu:skips_loss"}],
+            [{"text": "Біля нуля", "callback_data": "menu:skips_flat"}, {"text": "Макс плюс", "callback_data": "menu:skips_win"}],
+            [{"text": "Ще не закрились", "callback_data": "menu:skips_pending"}],
+            [{"text": "Назад", "callback_data": "menu:main"}],
+        ]
+    }
+
+
+def journal_menu_keyboard() -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [{"text": "Оновити журнал", "callback_data": "menu:journal"}],
+            [{"text": "Як закрити угоду", "callback_data": "menu:journal_help"}],
+            [{"text": "Назад", "callback_data": "menu:main"}],
+        ]
+    }
 
 
 def telegram_text_to_cli_args(text: str) -> list[str]:

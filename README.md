@@ -57,16 +57,32 @@ Telegram commands:
 ```text
 /help
 /ping
+/menu
 /scout --candidates examples/candidates.json --max-loss 200 --top 3
 /analyze --slug test --strike 80000 --direction up --stake 200 --deadline 2026-05-01 --btc-price 77000 --iv 0.30 --no-price 0.57
 /monitor --pm-cost 287.35 --pm-current-value 394.85 --pm-shares 509.5 --futures-realized-pnl -200.58 --max-loss 300
 /pm_liquidity --slug market-slug-here --outcome No --stake 200
 /status
+/last_skips
+/review_skips
 /journal
 /close trade_id --pnl 42.5 --note "manual result"
 ```
 
+`/menu` opens the button UI:
+
+```text
+Bot -> status, ping, restart/stop instructions
+Scanner -> scanner status and skipped opportunities
+Skipped opportunities -> latest, review now, full loss, near zero, max plus, pending
+Journal -> journal summary and close-trade help
+```
+
 `/status` shows the latest 24/7 scanner heartbeat: last scan time, source, scanned/matched/sent counts, IV/BTC inputs, filters, and the latest error if one happened.
+
+`/last_skips` shows recently skipped or filtered-out opportunities, including reason, NO wins probability, edge, reward/risk, worst-case, and hypothetical PnL if NO wins or if touch happens.
+
+`/review_skips` checks skipped opportunities whose deadlines have passed. If Polymarket has closed the market, the bot records whether the skipped setup would have been profitable. The 24/7 scanner also runs this review automatically and sends a Telegram summary when new skipped results are reviewed.
 
 After `/analyze` and `/scout`, Telegram shows inline buttons:
 

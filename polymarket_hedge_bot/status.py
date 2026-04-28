@@ -50,6 +50,7 @@ def render_scanner_status() -> str:
         f"Перевірено можливостей: {status.get('scanned', 'n/a')}",
         f"Пройшли фільтри: {status.get('matched', 'n/a')}",
         f"Надіслано alerts: {status.get('sent', 'n/a')}",
+        f"Записано пропущених: {status.get('skipped_logged', 'n/a')}",
         "",
         "LIVE ДАНІ:",
         f"BTC price input: {format_optional_number(status.get('btc_price'))}",

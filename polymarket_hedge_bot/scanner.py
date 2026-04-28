@@ -17,6 +17,7 @@ from polymarket_hedge_bot.formatting import positive_result_probability
 from polymarket_hedge_bot.journal import create_signal
 from polymarket_hedge_bot.live_discovery import discover_polymarket_btc_candidates
 from polymarket_hedge_bot.scout import Opportunity, load_candidates, scout_candidates
+from polymarket_hedge_bot.skip_journal import opportunity_key, record_skips, render_review_summary, review_due_skips
 from polymarket_hedge_bot.status import now_iso, write_scanner_status
 from polymarket_hedge_bot.telegram_bot import TelegramBot, TelegramResponse
 from polymarket_hedge_bot.telegram_views import render_scout_cards
@@ -375,7 +376,15 @@ def run_scanner_loop(
         try:
             opportunities, effective_config = evaluate_opportunities(config)
             matched = [opportunity for opportunity in opportunities if should_alert(opportunity, effective_config)]
+            matched_keys = {opportunity_key(opportunity) for opportunity in matched}
+            skipped_logged = record_skips(opportunities, matched_keys)
             sent = send_alerts(matched, effective_config, state, bot, chat_id, dry_run)
+            review_summary = review_due_skips(limit=10) if not dry_run else None
+            if review_summary is not None and review_summary.reviewed > 0:
+                review_text = render_review_summary(review_summary)
+                safe_print(review_text)
+                if bot is not None and chat_id is not None:
+                    bot.send_report(chat_id, TelegramResponse(text=review_text))
             if not dry_run:
                 save_state(state)
             write_scan_status(
@@ -385,8 +394,9 @@ def run_scanner_loop(
                 scanned=len(opportunities),
                 matched=len(matched),
                 sent=sent,
+                skipped_logged=skipped_logged,
             )
-            safe_print(f"Scan done: matched={len(matched)}, sent={sent}")
+            safe_print(f"Scan done: matched={len(matched)}, sent={sent}, skipped_logged={skipped_logged}")
         except Exception as exc:
             write_scan_status(
                 config=config,
@@ -395,6 +405,7 @@ def run_scanner_loop(
                 scanned=0,
                 matched=0,
                 sent=0,
+                skipped_logged=0,
                 error=str(exc),
             )
             safe_print(f"Scanner error: {exc}")
@@ -417,6 +428,7 @@ def write_scan_status(
     scanned: int,
     matched: int,
     sent: int,
+    skipped_logged: int,
     error: str | None = None,
 ) -> None:
     write_scanner_status(
@@ -429,6 +441,7 @@ def write_scan_status(
             "scanned": scanned,
             "matched": matched,
             "sent": sent,
+            "skipped_logged": skipped_logged,
             "btc_price": config.live_btc_price,
             "iv": config.live_iv,
             "funding_rate": config.funding_rate,
