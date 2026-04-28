@@ -112,11 +112,13 @@ Recommended one-process production runner:
 python -m polymarket_hedge_bot.bot_runner `
   --live-polymarket `
   --stake 200 `
-  --live-pages 3 `
+  --live-pages 5 `
   --live-limit 100 `
   --live-min-liquidity 500 `
   --live-orderbook `
-  --interval 60
+  --interval 15 `
+  --http-timeout 4 `
+  --max-workers 10
 ```
 
 This starts both parts in one process:
@@ -158,6 +160,41 @@ python -m polymarket_hedge_bot.scanner `
 ```
 
 The scanner sends only filtered opportunities and avoids duplicate alerts during the cooldown window.
+
+### Faster market data mode
+
+For quicker discovery, the scanner now fetches Polymarket pages and CLOB orderbooks in parallel.
+
+```text
+--interval       how often the scanner runs, default 60s
+--http-timeout   timeout for each public API request, default 5s
+--max-workers    parallel workers for Polymarket pages/orderbooks, default 8
+```
+
+Recommended VPS fast mode:
+
+```bash
+.venv/bin/python -m polymarket_hedge_bot.bot_runner \
+  --live-polymarket \
+  --stake 200 \
+  --live-pages 5 \
+  --live-limit 100 \
+  --live-min-liquidity 500 \
+  --live-orderbook \
+  --interval 15 \
+  --http-timeout 4 \
+  --max-workers 10
+```
+
+This is still polling. The lowest-latency upgrade is WebSocket streaming:
+
+```text
+Polymarket CLOB market WebSocket -> best_bid_ask / price_change / trades
+Binance USD-M WebSocket -> BTCUSDT markPrice@1s / bookTicker
+Deribit/OKX fallback -> IV / mark price / funding backup
+```
+
+The bot keeps REST as backup because WebSocket connections can disconnect and need automatic reconnect.
 
 Current scanner loop:
 

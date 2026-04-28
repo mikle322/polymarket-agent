@@ -1,4 +1,5 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -155,10 +156,12 @@ def scout_candidates(
     max_futures_margin: float | None = None,
     use_live_orderbook: bool = False,
     max_slippage: float | None = 0.03,
+    max_workers: int = 8,
+    polymarket_timeout: float = 5.0,
 ) -> list[Opportunity]:
-    polymarket = PolymarketConnector() if use_live_orderbook else None
-    opportunities = [
-        evaluate_candidate(
+    def evaluate(candidate: CandidateMarket) -> Opportunity:
+        polymarket = PolymarketConnector(timeout=polymarket_timeout) if use_live_orderbook else None
+        return evaluate_candidate(
             candidate,
             config,
             max_futures_margin,
@@ -166,8 +169,13 @@ def scout_candidates(
             use_live_orderbook=use_live_orderbook,
             max_slippage=max_slippage,
         )
-        for candidate in candidates
-    ]
+
+    if use_live_orderbook and len(candidates) > 1:
+        workers = max(1, min(max_workers, len(candidates)))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            opportunities = list(executor.map(evaluate, candidates))
+    else:
+        opportunities = [evaluate(candidate) for candidate in candidates]
     return sorted(opportunities, key=lambda item: item.score, reverse=True)
 
 

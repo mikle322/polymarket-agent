@@ -15,7 +15,7 @@ from polymarket_hedge_bot.connectors.deribit import DeribitConnector
 from polymarket_hedge_bot.connectors.okx_futures import OkxFuturesConnector
 from polymarket_hedge_bot.formatting import positive_result_probability
 from polymarket_hedge_bot.journal import create_signal
-from polymarket_hedge_bot.live_discovery import discover_polymarket_btc_candidates
+from polymarket_hedge_bot.live_discovery import discover_polymarket_btc_candidates_with_stats
 from polymarket_hedge_bot.scout import Opportunity, load_candidates, scout_candidates
 from polymarket_hedge_bot.skip_journal import opportunity_key, record_skips, render_review_summary, review_due_skips
 from polymarket_hedge_bot.status import now_iso, write_scanner_status
@@ -57,6 +57,8 @@ class ScannerConfig:
     funding_periods: float
     min_net_upside: float
     min_reward_risk: float
+    http_timeout: float
+    max_workers: int
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -90,6 +92,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--funding-periods", type=float, default=1.0)
     parser.add_argument("--min-net-upside", type=float, default=30.0)
     parser.add_argument("--min-reward-risk", type=float, default=0.25)
+    parser.add_argument("--http-timeout", type=float, default=5.0, help="HTTP timeout for public market data requests")
+    parser.add_argument("--max-workers", type=int, default=8, help="Parallel workers for market pages and orderbook checks")
     parser.add_argument("--once", action="store_true", help="Run one scan and exit")
     parser.add_argument("--dry-run", action="store_true", help="Print alerts instead of sending Telegram messages")
     return parser
@@ -125,6 +129,8 @@ def config_from_args(args: argparse.Namespace) -> ScannerConfig:
         funding_periods=args.funding_periods,
         min_net_upside=args.min_net_upside,
         min_reward_risk=args.min_reward_risk,
+        http_timeout=args.http_timeout,
+        max_workers=args.max_workers,
     )
 
 
@@ -142,36 +148,48 @@ def risk_config(config: ScannerConfig) -> RiskConfig:
 
 
 def run_scan(config: ScannerConfig) -> list[Opportunity]:
-    opportunities, effective_config = evaluate_opportunities(config)
+    opportunities, effective_config, _diagnostics = evaluate_opportunities(config)
     return [opportunity for opportunity in opportunities if should_alert(opportunity, effective_config)]
 
 
-def evaluate_opportunities(config: ScannerConfig) -> tuple[list[Opportunity], ScannerConfig]:
+def evaluate_opportunities(config: ScannerConfig) -> tuple[list[Opportunity], ScannerConfig, dict[str, Any]]:
     config = with_live_binance_data(config)
     config = with_live_deribit_iv(config)
+    diagnostics: dict[str, Any] = {}
     if config.live_polymarket:
         if config.live_btc_price is None:
             raise ValueError("--btc-price is required with --live-polymarket when Binance price is unavailable")
         if config.live_iv is None:
             raise ValueError("--iv is required with --live-polymarket")
-        candidates = discover_polymarket_btc_candidates(
+        candidates, discovery_stats = discover_polymarket_btc_candidates_with_stats(
             stake=config.live_stake,
             btc_price=config.live_btc_price,
             iv=config.live_iv,
             limit=config.live_limit,
             pages=config.live_pages,
             min_liquidity=config.live_min_liquidity,
+            timeout=config.http_timeout,
+            max_workers=config.max_workers,
         )
+        diagnostics["discovery"] = discovery_stats.to_dict()
     else:
         candidates = load_candidates(config.candidates)
+        diagnostics["discovery"] = {
+            "source": "candidate_file",
+            "parsed_candidates": len(candidates),
+        }
     opportunities = scout_candidates(
         candidates,
         risk_config(config),
         max_futures_margin=config.max_futures_margin,
         use_live_orderbook=config.live_orderbook,
         max_slippage=config.max_slippage,
+        max_workers=config.max_workers,
+        polymarket_timeout=config.http_timeout,
     )
-    return opportunities, config
+    diagnostics["candidates_loaded"] = len(candidates)
+    diagnostics["opportunities_analyzed"] = len(opportunities)
+    return opportunities, config, diagnostics
 
 
 def with_live_binance_data(config: ScannerConfig) -> ScannerConfig:
@@ -181,14 +199,14 @@ def with_live_binance_data(config: ScannerConfig) -> ScannerConfig:
         return config
 
     try:
-        connector = BinanceFuturesConnector()
+        connector = BinanceFuturesConnector(timeout=config.http_timeout)
         premium = connector.premium_index(config.binance_symbol)
         live_price = premium.mark_price
         live_funding = premium.last_funding_rate
     except (HTTPError, URLError, RuntimeError) as exc:
         safe_print(f"Binance market data unavailable, using OKX fallback: {exc}")
         try:
-            okx = OkxFuturesConnector()
+            okx = OkxFuturesConnector(timeout=config.http_timeout)
             ticker = okx.ticker(config.okx_inst_id)
             funding = okx.funding_rate(config.okx_inst_id)
             live_price = ticker.last
@@ -213,7 +231,7 @@ def with_live_deribit_iv(config: ScannerConfig) -> ScannerConfig:
         return config
 
     try:
-        connector = DeribitConnector()
+        connector = DeribitConnector(timeout=config.http_timeout)
         vol = connector.btc_volatility_index(config.deribit_lookback_minutes)
     except (HTTPError, URLError, RuntimeError) as exc:
         raise RuntimeError(f"Deribit IV unavailable and --iv was not provided: {exc}") from exc
@@ -374,11 +392,14 @@ def run_scanner_loop(
         started_at = now_iso()
         state = load_state()
         try:
-            opportunities, effective_config = evaluate_opportunities(config)
+            opportunities, effective_config, diagnostics = evaluate_opportunities(config)
             matched = [opportunity for opportunity in opportunities if should_alert(opportunity, effective_config)]
             matched_keys = {opportunity_key(opportunity) for opportunity in matched}
             skipped_logged = record_skips(opportunities, matched_keys)
             sent = send_alerts(matched, effective_config, state, bot, chat_id, dry_run)
+            diagnostics["matched_alert_filters"] = len(matched)
+            diagnostics["sent_after_cooldown"] = sent
+            diagnostics["skipped_logged"] = skipped_logged
             review_summary = review_due_skips(limit=10) if not dry_run else None
             if review_summary is not None and review_summary.reviewed > 0:
                 review_text = render_review_summary(review_summary)
@@ -395,6 +416,7 @@ def run_scanner_loop(
                 matched=len(matched),
                 sent=sent,
                 skipped_logged=skipped_logged,
+                diagnostics=diagnostics,
             )
             safe_print(f"Scan done: matched={len(matched)}, sent={sent}, skipped_logged={skipped_logged}")
         except Exception as exc:
@@ -429,6 +451,7 @@ def write_scan_status(
     matched: int,
     sent: int,
     skipped_logged: int,
+    diagnostics: dict[str, Any] | None = None,
     error: str | None = None,
 ) -> None:
     write_scanner_status(
@@ -452,6 +475,9 @@ def write_scan_status(
             "min_net_upside": config.min_net_upside,
             "min_reward_risk": config.min_reward_risk,
             "live_orderbook": config.live_orderbook,
+            "http_timeout": config.http_timeout,
+            "max_workers": config.max_workers,
+            "diagnostics": diagnostics or {},
             "error": error,
         }
     )

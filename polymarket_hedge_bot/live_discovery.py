@@ -1,7 +1,8 @@
 import argparse
 import json
 import re
-from dataclasses import asdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -42,6 +43,25 @@ DOWN_WORDS = (
 BTC_WORDS = ("bitcoin", "btc")
 
 
+@dataclass
+class DiscoveryStats:
+    api_seen: int = 0
+    active_orderbook: int = 0
+    btc_related: int = 0
+    touch_or_down_keyword: int = 0
+    filtered_liquidity: int = 0
+    missing_strike: int = 0
+    missing_direction: int = 0
+    missing_deadline: int = 0
+    missing_no_token: int = 0
+    missing_no_price: int = 0
+    parsed_before_dedupe: int = 0
+    parsed_candidates: int = 0
+
+    def to_dict(self) -> dict[str, int]:
+        return asdict(self)
+
+
 def discover_polymarket_btc_candidates(
     stake: float,
     btc_price: float,
@@ -49,32 +69,60 @@ def discover_polymarket_btc_candidates(
     limit: int = 100,
     pages: int = 3,
     min_liquidity: float = 0.0,
+    timeout: float = 5.0,
+    max_workers: int = 6,
     debug: bool = False,
 ) -> list[CandidateMarket]:
-    connector = PolymarketConnector()
-    candidates: list[CandidateMarket] = []
-    stats = {
-        "seen": 0,
-        "btc": 0,
-        "keyword": 0,
-        "parsed": 0,
-        "filtered_liquidity": 0,
-        "missing_fields": 0,
-    }
+    candidates, _stats = discover_polymarket_btc_candidates_with_stats(
+        stake=stake,
+        btc_price=btc_price,
+        iv=iv,
+        limit=limit,
+        pages=pages,
+        min_liquidity=min_liquidity,
+        timeout=timeout,
+        max_workers=max_workers,
+        debug=debug,
+    )
+    return candidates
 
-    for page in range(pages):
-        markets = connector.list_markets(limit=limit, offset=page * limit)
-        for market in markets:
-            candidate = market_to_candidate(market, stake, btc_price, iv, min_liquidity, stats=stats)
-            if candidate is not None:
-                candidates.append(candidate)
+
+def discover_polymarket_btc_candidates_with_stats(
+    stake: float,
+    btc_price: float,
+    iv: float,
+    limit: int = 100,
+    pages: int = 3,
+    min_liquidity: float = 0.0,
+    timeout: float = 5.0,
+    max_workers: int = 6,
+    debug: bool = False,
+) -> tuple[list[CandidateMarket], DiscoveryStats]:
+    candidates: list[CandidateMarket] = []
+    stats = DiscoveryStats()
+
+    def fetch_page(page: int) -> list[PolymarketMarket]:
+        connector = PolymarketConnector(timeout=timeout)
+        return connector.list_markets(limit=limit, offset=page * limit)
+
+    workers = max(1, min(max_workers, max(1, pages)))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(fetch_page, page) for page in range(pages)]
+        for future in as_completed(futures):
+            for market in future.result():
+                candidate = market_to_candidate(market, stake, btc_price, iv, min_liquidity, stats=stats)
+                if candidate is not None:
+                    candidates.append(candidate)
+
+    deduped = dedupe_candidates(candidates)
+    stats.parsed_candidates = len(deduped)
 
     if debug:
         print("Discovery debug:")
-        for key, value in stats.items():
+        for key, value in stats.to_dict().items():
             print(f"  {key}: {value}")
 
-    return dedupe_candidates(candidates)
+    return deduped, stats
 
 
 def market_to_candidate(
@@ -83,24 +131,30 @@ def market_to_candidate(
     btc_price: float,
     iv: float,
     min_liquidity: float,
-    stats: dict[str, int] | None = None,
+    stats: DiscoveryStats | None = None,
 ) -> CandidateMarket | None:
     text = f"{market.question} {market.slug}".lower()
     if stats is not None:
-        stats["seen"] += 1
+        stats.api_seen += 1
+
     if not market.active or market.closed or market.archived or not market.enable_orderbook:
         return None
+    if stats is not None:
+        stats.active_orderbook += 1
+
     if not any(word in text for word in BTC_WORDS):
         return None
     if stats is not None:
-        stats["btc"] += 1
+        stats.btc_related += 1
+
     if not any(word in text for word in TOUCH_WORDS + DOWN_WORDS):
         return None
     if stats is not None:
-        stats["keyword"] += 1
+        stats.touch_or_down_keyword += 1
+
     if market.liquidity is not None and market.liquidity < min_liquidity:
         if stats is not None:
-            stats["filtered_liquidity"] += 1
+            stats.filtered_liquidity += 1
         return None
 
     strike = parse_strike(text)
@@ -109,12 +163,32 @@ def market_to_candidate(
     no_token_id = token_id_for_outcome(market, "No")
     no_price = price_for_outcome(market, "No")
 
-    if strike is None or direction is None or deadline is None or no_token_id is None or no_price is None:
+    missing = False
+    if strike is None:
+        missing = True
         if stats is not None:
-            stats["missing_fields"] += 1
+            stats.missing_strike += 1
+    if direction is None:
+        missing = True
+        if stats is not None:
+            stats.missing_direction += 1
+    if deadline is None:
+        missing = True
+        if stats is not None:
+            stats.missing_deadline += 1
+    if no_token_id is None:
+        missing = True
+        if stats is not None:
+            stats.missing_no_token += 1
+    if no_price is None:
+        missing = True
+        if stats is not None:
+            stats.missing_no_price += 1
+    if missing:
         return None
+
     if stats is not None:
-        stats["parsed"] += 1
+        stats.parsed_before_dedupe += 1
 
     return CandidateMarket(
         slug=market.slug,
@@ -234,6 +308,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--pages", type=int, default=3)
     parser.add_argument("--min-liquidity", type=float, default=0.0)
+    parser.add_argument("--timeout", type=float, default=5.0)
+    parser.add_argument("--max-workers", type=int, default=6)
     parser.add_argument("--output", help="Optional JSON output path")
     parser.add_argument("--debug", action="store_true")
     return parser
@@ -256,17 +332,21 @@ def main() -> int:
     if args.iv is None:
         raise SystemExit("--iv is required unless --inspect is used")
 
-    candidates = discover_polymarket_btc_candidates(
+    candidates, stats = discover_polymarket_btc_candidates_with_stats(
         stake=args.stake,
         btc_price=args.btc_price,
         iv=args.iv,
         limit=args.limit,
         pages=args.pages,
         min_liquidity=args.min_liquidity,
+        timeout=args.timeout,
+        max_workers=args.max_workers,
         debug=args.debug,
     )
 
     print(f"Знайдено кандидатів: {len(candidates)}")
+    if args.debug:
+        print(f"Діагностика: {stats.to_dict()}")
     for index, candidate in enumerate(candidates, start=1):
         print(
             f"{index}. {candidate.slug} | {candidate.direction} {candidate.strike:.0f} | "
