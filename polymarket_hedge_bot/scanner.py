@@ -52,6 +52,16 @@ class ScannerConfig:
     min_hours_to_deadline: float
     min_no_price: float
     max_no_price: float
+    radar_enabled: bool
+    radar_top: int
+    radar_min_score: float
+    radar_min_edge: float
+    radar_min_positive_probability: float
+    radar_min_hours_to_deadline: float
+    radar_min_no_price: float
+    radar_max_no_price: float
+    radar_min_net_upside: float
+    radar_min_reward_risk: float
     cooldown_seconds: int
     live_orderbook: bool
     max_slippage: float
@@ -90,6 +100,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-hours-to-deadline", type=float, default=6.0)
     parser.add_argument("--min-no-price", type=float, default=0.05)
     parser.add_argument("--max-no-price", type=float, default=0.90)
+    parser.add_argument("--no-radar", action="store_true", help="Disable soft radar candidates in scanner status")
+    parser.add_argument("--radar-top", type=int, default=5)
+    parser.add_argument("--radar-min-score", type=float, default=25.0)
+    parser.add_argument("--radar-min-edge", type=float, default=0.0)
+    parser.add_argument("--radar-min-positive-probability", type=float, default=0.50)
+    parser.add_argument("--radar-min-hours-to-deadline", type=float, default=3.0)
+    parser.add_argument("--radar-min-no-price", type=float, default=0.03)
+    parser.add_argument("--radar-max-no-price", type=float, default=0.95)
+    parser.add_argument("--radar-min-net-upside", type=float, default=10.0)
+    parser.add_argument("--radar-min-reward-risk", type=float, default=0.10)
     parser.add_argument("--cooldown-min", type=float, default=30.0)
     parser.add_argument("--live-orderbook", action="store_true")
     parser.add_argument("--max-slippage", type=float, default=0.03)
@@ -130,6 +150,16 @@ def config_from_args(args: argparse.Namespace) -> ScannerConfig:
         min_hours_to_deadline=args.min_hours_to_deadline,
         min_no_price=args.min_no_price,
         max_no_price=args.max_no_price,
+        radar_enabled=not args.no_radar,
+        radar_top=args.radar_top,
+        radar_min_score=args.radar_min_score,
+        radar_min_edge=args.radar_min_edge,
+        radar_min_positive_probability=args.radar_min_positive_probability,
+        radar_min_hours_to_deadline=args.radar_min_hours_to_deadline,
+        radar_min_no_price=args.radar_min_no_price,
+        radar_max_no_price=args.radar_max_no_price,
+        radar_min_net_upside=args.radar_min_net_upside,
+        radar_min_reward_risk=args.radar_min_reward_risk,
         cooldown_seconds=int(args.cooldown_min * 60),
         live_orderbook=args.live_orderbook,
         max_slippage=args.max_slippage,
@@ -188,8 +218,9 @@ def evaluate_opportunities(config: ScannerConfig) -> tuple[list[Opportunity], Sc
             "source": "candidate_file",
             "parsed_candidates": len(candidates),
         }
-    candidates_loaded = len(candidates)
-    candidates, prefilter_stats = prefilter_candidates(candidates, config)
+    all_candidates = candidates
+    candidates_loaded = len(all_candidates)
+    candidates, prefilter_stats = prefilter_candidates(all_candidates, config)
     opportunities, evaluation_errors = scout_candidates_safe(
         candidates,
         config,
@@ -199,7 +230,85 @@ def evaluate_opportunities(config: ScannerConfig) -> tuple[list[Opportunity], Sc
     diagnostics["candidates_after_prefilter"] = len(candidates)
     diagnostics["opportunities_analyzed"] = len(opportunities)
     diagnostics["evaluation_errors"] = evaluation_errors
+    diagnostics["radar"] = evaluate_radar(all_candidates, config)
     return opportunities, config, diagnostics
+
+
+def radar_config(config: ScannerConfig) -> ScannerConfig:
+    return dataclasses.replace(
+        config,
+        min_hours_to_deadline=config.radar_min_hours_to_deadline,
+        min_no_price=config.radar_min_no_price,
+        max_no_price=config.radar_max_no_price,
+        min_net_upside=config.radar_min_net_upside,
+        min_reward_risk=config.radar_min_reward_risk,
+    )
+
+
+def evaluate_radar(candidates: list[Any], config: ScannerConfig) -> dict[str, Any]:
+    if not config.radar_enabled:
+        return {"enabled": False}
+
+    soft_config = radar_config(config)
+    radar_candidates, prefilter_stats = prefilter_candidates(candidates, soft_config)
+    opportunities, evaluation_errors = scout_candidates_safe(radar_candidates, soft_config)
+    matched = [opportunity for opportunity in opportunities if should_radar(opportunity, config)]
+    return {
+        "enabled": True,
+        "candidates_after_prefilter": len(radar_candidates),
+        "opportunities_analyzed": len(opportunities),
+        "matched": len(matched),
+        "prefilter": prefilter_stats,
+        "evaluation_errors": evaluation_errors,
+        "top": [serialize_radar_opportunity(opportunity) for opportunity in matched[: config.radar_top]],
+    }
+
+
+def should_radar(opportunity: Opportunity, config: ScannerConfig) -> bool:
+    if opportunity.score < config.radar_min_score:
+        return False
+    if opportunity.edge.true_edge < config.radar_min_edge:
+        return False
+    if positive_result_probability(opportunity.edge, opportunity.costs) < config.radar_min_positive_probability:
+        return False
+    if opportunity.quality.net_upside < config.radar_min_net_upside:
+        return False
+    if opportunity.quality.reward_risk < config.radar_min_reward_risk:
+        return False
+    if not opportunity.liquidity.ok:
+        return False
+    return True
+
+
+def serialize_radar_opportunity(opportunity: Opportunity) -> dict[str, Any]:
+    candidate = opportunity.candidate
+    return {
+        "slug": candidate.slug,
+        "question": candidate.question,
+        "deadline": candidate.deadline.isoformat(),
+        "decision": opportunity.decision,
+        "reason": opportunity.reason,
+        "score": opportunity.score,
+        "no_price": candidate.no_price,
+        "positive_probability": positive_result_probability(opportunity.edge, opportunity.costs),
+        "edge": opportunity.edge.true_edge,
+        "fair_no": opportunity.edge.fair_no,
+        "touch": opportunity.edge.fair_touch,
+        "quality_label": opportunity.quality.label,
+        "net_upside": opportunity.quality.net_upside,
+        "reward_risk": opportunity.quality.reward_risk,
+        "worst_case_after_sl": opportunity.worst_case_after_sl,
+        "liquidity_reason": opportunity.liquidity.reason,
+        "pm_shares": opportunity.pm_shares,
+        "futures_side": opportunity.hedge.side,
+        "futures_size_btc": opportunity.hedge.size_btc,
+        "futures_leverage": opportunity.hedge.leverage,
+        "futures_margin": opportunity.hedge.isolated_margin,
+        "take_profit": opportunity.hedge.take_profit,
+        "stop_loss": opportunity.hedge.stop_loss,
+        "net_no_win": opportunity.costs.net_no_win_after_hedge_sl,
+        "net_touch": opportunity.costs.net_touch_after_hedge_sl_loss,
+    }
 
 
 def prefilter_candidates(candidates: list[Any], config: ScannerConfig) -> tuple[list[Any], dict[str, Any]]:
@@ -566,6 +675,16 @@ def write_scan_status(
             "min_hours_to_deadline": config.min_hours_to_deadline,
             "min_no_price": config.min_no_price,
             "max_no_price": config.max_no_price,
+            "radar_enabled": config.radar_enabled,
+            "radar_top": config.radar_top,
+            "radar_min_score": config.radar_min_score,
+            "radar_min_edge": config.radar_min_edge,
+            "radar_min_positive_probability": config.radar_min_positive_probability,
+            "radar_min_hours_to_deadline": config.radar_min_hours_to_deadline,
+            "radar_min_no_price": config.radar_min_no_price,
+            "radar_max_no_price": config.radar_max_no_price,
+            "radar_min_net_upside": config.radar_min_net_upside,
+            "radar_min_reward_risk": config.radar_min_reward_risk,
             "min_net_upside": config.min_net_upside,
             "min_reward_risk": config.min_reward_risk,
             "live_orderbook": config.live_orderbook,

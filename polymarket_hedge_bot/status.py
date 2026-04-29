@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from polymarket_hedge_bot.formatting import money, ua_reason
+
 
 STATUS_PATH = Path("data") / "scanner_status.json"
 _STATUS_LOCK = threading.RLock()
@@ -60,6 +62,9 @@ def render_scanner_status() -> str:
     ]
 
     diagnostics = status.get("diagnostics") or {}
+    radar = diagnostics.get("radar") or {}
+    if radar.get("enabled"):
+        lines.append(f"• Радар-кандидатів: <b>{radar.get('matched', 0)}</b>")
     lines.extend(render_diagnostics_block(diagnostics))
     lines.extend(render_prefilter_block(diagnostics))
 
@@ -88,6 +93,81 @@ def render_scanner_status() -> str:
         lines.extend(["", "⚠️ <b>Остання помилка</b>", esc(error)])
 
     return "\n".join(lines)
+
+
+def render_radar_status() -> str:
+    status = load_scanner_status()
+    if status is None:
+        return (
+            "🔭 <b>Радар угод</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "Поки немає даних. Дочекайся першого scan після запуску бота."
+        )
+
+    diagnostics = status.get("diagnostics") or {}
+    radar = diagnostics.get("radar") or {}
+    if not radar.get("enabled"):
+        return (
+            "🔭 <b>Радар угод</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "Радар зараз вимкнений у параметрах scanner."
+        )
+
+    top = radar.get("top") or []
+    lines = [
+        "🔭 <b>Радар угод</b>",
+        "━━━━━━━━━━━━━━━━",
+        "М'який режим: це не сигнал на вхід, а список угод для спостереження.",
+        "",
+        f"• Останній scan: <b>{short_time(status.get('finished_at'))}</b>",
+        f"• Після radar pre-filter: <b>{radar.get('candidates_after_prefilter', 'n/a')}</b>",
+        f"• Проаналізовано: <b>{radar.get('opportunities_analyzed', 'n/a')}</b>",
+        f"• Цікавих для radar: <b>{radar.get('matched', 0)}</b>",
+        "",
+        "🎚 <b>М'які фільтри radar</b>",
+        f"• Min score: <b>{status.get('radar_min_score', 'n/a')}</b>",
+        f"• Min edge: <b>{format_optional_percent(status.get('radar_min_edge'))}</b>",
+        f"• Min NO wins: <b>{format_optional_percent(status.get('radar_min_positive_probability'))}</b>",
+        f"• Min time to deadline: <b>{format_optional_hours(status.get('radar_min_hours_to_deadline'))}</b>",
+        f"• NO price range: <b>{format_optional_price(status.get('radar_min_no_price'))} - {format_optional_price(status.get('radar_max_no_price'))}</b>",
+        f"• Min net upside: <b>{money(float(status.get('radar_min_net_upside', 0.0)))}</b>",
+        f"• Min reward/risk: <b>{status.get('radar_min_reward_risk', 'n/a')}</b>",
+    ]
+
+    if not top:
+        lines.extend(["", f"💡 <b>Чому порожньо:</b> {esc(radar_zero_reason(radar))}"])
+        return "\n".join(lines)
+
+    lines.extend(["", "📌 <b>Найцікавіші зараз</b>"])
+    for index, item in enumerate(top, start=1):
+        lines.extend(
+            [
+                "",
+                f"{index}. <b>{esc(item.get('decision', 'n/a'))}</b> | score <b>{float(item.get('score', 0.0)):.1f}</b>",
+                f"<code>{esc(item.get('slug', 'n/a'))}</code>",
+                f"• Ймовірність позитивного результату: <b>{format_optional_percent(item.get('positive_probability'))}</b>",
+                f"• Edge: <b>{format_optional_percent(item.get('edge'))}</b> | NO: <b>{format_optional_price(item.get('no_price'))}</b>",
+                f"• Net upside: <b>{money(float(item.get('net_upside', 0.0)))}</b> | R/R: <b>{float(item.get('reward_risk', 0.0)):.2f}</b>",
+                f"• Worst-case: <b>{money(float(item.get('worst_case_after_sl', 0.0)))}</b>",
+                f"• Futures: <code>{esc(item.get('futures_side', 'n/a'))}</code> <b>{float(item.get('futures_size_btc', 0.0)):.6f} BTC</b> | margin <b>{money(float(item.get('futures_margin', 0.0)))}</b>",
+                f"• TP / SL: <b>{money(float(item.get('take_profit', 0.0)))}</b> / <b>{money(float(item.get('stop_loss', 0.0)))}</b>",
+                f"• Причина: {esc(ua_reason(str(item.get('reason', ''))))}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def radar_zero_reason(radar: dict[str, Any]) -> str:
+    prefilter = radar.get("prefilter") or {}
+    if int_or_zero(radar.get("candidates_after_prefilter")) == 0:
+        deadline_filtered = int_or_zero(prefilter.get("deadline_filtered"))
+        no_price_filtered = int_or_zero(prefilter.get("no_price_filtered"))
+        if deadline_filtered or no_price_filtered:
+            return "кандидати були, але radar pre-filter відсіяв їх по дедлайну або NO price."
+        return "scanner не знайшов кандидатів для radar."
+    if int_or_zero(radar.get("opportunities_analyzed")) == 0:
+        return "кандидати були, але hedge-аналіз їх не пропустив через некоректні або ризикові вхідні дані."
+    return "угоди є, але вони не проходять навіть м'які radar-фільтри score, edge, net upside, reward/risk або ліквідності."
 
 
 def render_prefilter_block(diagnostics: dict[str, Any]) -> list[str]:

@@ -174,7 +174,10 @@ For quicker discovery, the scanner now fetches Polymarket pages and CLOB orderbo
 --max-workers    parallel workers for Polymarket pages/orderbooks, default 8
 --min-hours-to-deadline  ignore markets too close to resolution, default 6h
 --min-no-price / --max-no-price  keep NO price in a sane range, default 0.05-0.90
+--radar-*        softer observation filters for /radar, enabled by default
 ```
+
+The scanner keeps strict signal filters and a softer Radar at the same time. Use `/radar` or the Scanner -> Radar button in Telegram to see interesting setups that are not clean enough for a normal alert yet.
 
 Recommended VPS fast mode:
 
