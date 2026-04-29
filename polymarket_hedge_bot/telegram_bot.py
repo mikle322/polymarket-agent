@@ -633,6 +633,7 @@ def main_menu_keyboard() -> dict[str, Any]:
     return {
         "inline_keyboard": [
             [{"text": "🤖 Бот", "callback_data": "menu:bot"}, {"text": "🔎 Сканер", "callback_data": "menu:scanner"}],
+            [{"text": "🔭 Радар угод", "callback_data": "menu:scanner_radar"}],
             [{"text": "🧩 Пропущені угоди", "callback_data": "menu:skips"}],
             [{"text": "📒 Журнал", "callback_data": "menu:journal"}, {"text": "✨ Довідка", "callback_data": "menu:help"}],
         ]
@@ -653,6 +654,7 @@ def scanner_menu_keyboard() -> dict[str, Any]:
     return {
         "inline_keyboard": [
             [{"text": "📡 Статус scanner", "callback_data": "menu:scanner_status"}],
+            [{"text": "🔭 Радар угод", "callback_data": "menu:scanner_radar"}],
             [{"text": "🧩 Пропущені угоди", "callback_data": "menu:skips"}],
             [{"text": "⬅️ Назад", "callback_data": "menu:main"}],
         ]
