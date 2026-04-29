@@ -19,7 +19,8 @@ from polymarket_hedge_bot.formatting import money, positive_result_probability
 from polymarket_hedge_bot.hedge import calculate_futures_hedge
 from polymarket_hedge_bot.journal import close_trade, create_signal, journal_summary, record_entry
 from polymarket_hedge_bot.liquidity import check_basic_liquidity
-from polymarket_hedge_bot.positions import render_wallet_positions, wallet_from_text
+from polymarket_hedge_bot.opportunity_history import render_history_summary
+from polymarket_hedge_bot.positions import render_position_risk_summary, render_wallet_positions, wallet_from_text
 from polymarket_hedge_bot.probability import touch_probability, years_until
 from polymarket_hedge_bot.quality import calculate_quality
 from polymarket_hedge_bot.scout import load_candidates, scout_candidates
@@ -659,6 +660,7 @@ def scanner_menu_keyboard() -> dict[str, Any]:
             [{"text": "📡 Статус scanner", "callback_data": "menu:scanner_status"}],
             [{"text": "🟡 Чому немає сигналів", "callback_data": "menu:scanner_why"}],
             [{"text": "🔭 Радар угод", "callback_data": "menu:scanner_radar"}],
+            [{"text": "📚 Scanner history", "callback_data": "menu:scanner_history"}],
             [{"text": "🧩 Пропущені угоди", "callback_data": "menu:skips"}],
             [{"text": "⬅️ Назад", "callback_data": "menu:main"}],
         ]
@@ -692,6 +694,7 @@ def positions_menu_keyboard() -> dict[str, Any]:
     return {
         "inline_keyboard": [
             [{"text": "🔄 Оновити позиції", "callback_data": "menu:positions"}],
+            [{"text": "🧯 Risk summary", "callback_data": "menu:positions_risk"}],
             [{"text": "📒 Журнал", "callback_data": "menu:journal"}],
             [{"text": "⬅️ Назад", "callback_data": "menu:main"}],
         ]
@@ -725,6 +728,8 @@ def handle_text_command(text: str) -> TelegramResponse:
         return TelegramResponse(render_radar_status(), reply_markup=scanner_menu_keyboard(), html=True)
     if text in {"/why_no_signals", "/why"}:
         return TelegramResponse(render_why_no_signals(), reply_markup=scanner_menu_keyboard(), html=True)
+    if text in {"/history", "/scanner_history"}:
+        return TelegramResponse(render_history_summary(), reply_markup=scanner_menu_keyboard(), html=True)
     if text == "/last_skips":
         return TelegramResponse(render_last_skips(), reply_markup=skips_menu_keyboard(), html=True)
     if text == "/review_skips":
@@ -734,6 +739,12 @@ def handle_text_command(text: str) -> TelegramResponse:
     if text.startswith("/positions"):
         return TelegramResponse(
             render_wallet_positions(wallet_from_text(text)),
+            reply_markup=positions_menu_keyboard(),
+            html=True,
+        )
+    if text.startswith("/risk"):
+        return TelegramResponse(
+            render_position_risk_summary(wallet_from_text(text)),
             reply_markup=positions_menu_keyboard(),
             html=True,
         )
@@ -809,6 +820,8 @@ def handle_menu_callback(data: str) -> TelegramResponse:
         return TelegramResponse(render_radar_status(), reply_markup=scanner_menu_keyboard(), html=True)
     if action == "scanner_why":
         return TelegramResponse(render_why_no_signals(), reply_markup=scanner_menu_keyboard(), html=True)
+    if action == "scanner_history":
+        return TelegramResponse(render_history_summary(), reply_markup=scanner_menu_keyboard(), html=True)
     if action == "skips":
         return TelegramResponse(
             "🧩 <b>Пропущені угоди</b>\n"
@@ -833,6 +846,8 @@ def handle_menu_callback(data: str) -> TelegramResponse:
         return TelegramResponse(render_journal_card(), reply_markup=journal_menu_keyboard(), html=True)
     if action == "positions":
         return TelegramResponse(render_wallet_positions(), reply_markup=positions_menu_keyboard(), html=True)
+    if action == "positions_risk":
+        return TelegramResponse(render_position_risk_summary(), reply_markup=positions_menu_keyboard(), html=True)
     if action == "journal_help":
         return TelegramResponse(
             "📒 <b>Як працює журнал</b>\n"

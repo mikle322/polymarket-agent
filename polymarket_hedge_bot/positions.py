@@ -55,6 +55,28 @@ def render_wallet_positions(wallet: str | None = None, limit: int = 12, timeout:
     return render_positions_card(wallet, positions, limit=limit, checked_wallets=checked_wallets, proxy_wallet=proxy_wallet)
 
 
+def render_position_risk_summary(wallet: str | None = None, limit: int = 100, timeout: float = 8.0) -> str:
+    wallet = wallet or os.environ.get("POLYMARKET_WALLET_ADDRESS") or os.environ.get("POLYMARKET_PROXY_WALLET")
+    if not wallet:
+        return (
+            "⚠️ <b>Risk summary</b>\n\n"
+            "Спочатку додай <code>POLYMARKET_WALLET_ADDRESS=0x...</code> у <code>.env</code> або виклич <code>/risk 0x...</code>."
+        )
+    if not WALLET_RE.match(wallet):
+        return "⚠️ <b>Некоректна адреса</b>\n\nАдреса має виглядати як <code>0x</code> + 40 hex символів."
+
+    connector = PolymarketDataConnector(timeout=timeout)
+    try:
+        positions, checked_wallets, proxy_wallet = load_positions_with_proxy_fallback(connector, wallet, limit)
+    except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
+        return (
+            "⚠️ <b>Не вдалося отримати risk summary</b>\n\n"
+            f"Wallet: <code>{html.escape(short_wallet(wallet))}</code>\n"
+            f"Причина: <code>{html.escape(str(exc))}</code>"
+        )
+    return render_risk_card(wallet, positions, checked_wallets=checked_wallets, proxy_wallet=proxy_wallet)
+
+
 def load_positions_with_proxy_fallback(
     connector: PolymarketDataConnector,
     wallet: str,
@@ -145,6 +167,72 @@ def render_positions_card(
         ]
     )
     return "\n".join(lines)
+
+
+def render_risk_card(
+    wallet: str,
+    positions: list[PolymarketPosition],
+    checked_wallets: list[str] | None = None,
+    proxy_wallet: str | None = None,
+) -> str:
+    active = only_active_positions(positions)
+    total_cost = sum(position.initial_value for position in active)
+    total_value = sum(position.current_value for position in active)
+    total_pnl = sum(position.cash_pnl for position in active)
+    max_loss_if_all_zero = total_value
+    btc_positions = [position for position in active if is_btc_position(position)]
+    btc_value = sum(position.current_value for position in btc_positions)
+    btc_cost = sum(position.initial_value for position in btc_positions)
+    largest = sorted(active, key=lambda position: position.current_value, reverse=True)[:5]
+    near_deadline = sorted(active, key=lambda position: parse_date(position.end_date) or datetime.max.replace(tzinfo=timezone.utc))[:5]
+
+    lines = [
+        "🧯 <b>Portfolio risk</b>",
+        "━━━━━━━━━━━━━━━━",
+        f"👛 Wallet: <code>{html.escape(short_wallet(wallet))}</code>",
+        f"🔎 Checked: <code>{html.escape(', '.join(short_wallet(item) for item in (checked_wallets or [wallet])))}</code>",
+    ]
+    if proxy_wallet:
+        lines.append(f"🔁 Proxy: <code>{html.escape(short_wallet(proxy_wallet))}</code>")
+
+    lines.extend(
+        [
+            "",
+            f"• Активних позицій: <b>{len(active)}</b>",
+            f"• Current value: <b>{money(total_value)}</b>",
+            f"• Cost basis: <b>{money(total_cost)}</b>",
+            f"• Cash PnL: <b>{money(total_pnl)}</b>",
+            f"• Max loss if all active go to 0: <b>{money(max_loss_if_all_zero)}</b>",
+            "",
+            "<b>BTC exposure</b>",
+            f"• BTC positions: <b>{len(btc_positions)}</b>",
+            f"• BTC current value: <b>{money(btc_value)}</b>",
+            f"• BTC cost basis: <b>{money(btc_cost)}</b>",
+        ]
+    )
+
+    if largest:
+        lines.extend(["", "<b>Largest active positions</b>"])
+        for index, position in enumerate(largest, start=1):
+            lines.append(
+                f"{index}. <code>{html.escape(position.slug or position.condition_id[:12])}</code> | "
+                f"{html.escape(position.outcome or 'Outcome')} | {money(position.current_value)} | PnL {money(position.cash_pnl)}"
+            )
+
+    if near_deadline:
+        lines.extend(["", "<b>Nearest deadlines</b>"])
+        for index, position in enumerate(near_deadline, start=1):
+            lines.append(
+                f"{index}. <code>{html.escape(short_date(position.end_date))}</code> | "
+                f"{html.escape(trim(position.slug or position.title, 48))} | {money(position.current_value)}"
+            )
+
+    return "\n".join(lines)
+
+
+def is_btc_position(position: PolymarketPosition) -> bool:
+    text = f"{position.title} {position.slug} {position.event_slug}".lower()
+    return "bitcoin" in text or "btc" in text
 
 
 def proxy_hint(proxy_wallet: str | None) -> str:
