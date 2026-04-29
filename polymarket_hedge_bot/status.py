@@ -115,11 +115,14 @@ def render_diagnostics_block(diagnostics: dict[str, Any]) -> list[str]:
         "",
         "🧪 <b>Діагностика нуля</b>",
         f"• API ринків переглянуто: <b>{discovery.get('api_seen', 'n/a')}</b>",
+        f"• API помилок: <b>{discovery.get('api_errors', 'n/a')}</b>",
+        f"• Events переглянуто: <b>{discovery.get('event_seen', 'n/a')}</b>",
         f"• Активні з orderbook: <b>{discovery.get('active_orderbook', 'n/a')}</b>",
         f"• BTC-related: <b>{discovery.get('btc_related', 'n/a')}</b>",
         f"• Touch/down keyword: <b>{discovery.get('touch_or_down_keyword', 'n/a')}</b>",
         f"• Відсіяла ліквідність: <b>{discovery.get('filtered_liquidity', 'n/a')}</b>",
         f"• Не розпарсились поля: <b>{missing_fields_total(discovery)}</b>",
+        f"• Дозавантажено по slug: <b>{discovery.get('hydrated_by_slug', 'n/a')}</b>",
         f"• Кандидатів після парсингу: <b>{discovery.get('parsed_candidates', diagnostics.get('candidates_loaded', 'n/a'))}</b>",
         f"• Дійшли до аналізу: <b>{diagnostics.get('opportunities_analyzed', 'n/a')}</b>",
         f"• Пройшли alert-фільтри: <b>{diagnostics.get('matched_alert_filters', 'n/a')}</b>",
@@ -128,6 +131,18 @@ def render_diagnostics_block(diagnostics: dict[str, Any]) -> list[str]:
     reason = zero_reason(diagnostics)
     if reason:
         lines.extend(["", f"💡 <b>Чому зараз 0:</b> {esc(reason)}"])
+    failed_examples = discovery.get("failed_examples") or []
+    if failed_examples:
+        lines.extend(["", "🧾 <b>Приклади, які не стали кандидатами</b>"])
+        for item in failed_examples[:4]:
+            slug = item.get("slug") or "n/a"
+            item_reason = item.get("reason") or "unknown"
+            lines.append(f"• <code>{esc(slug)}</code>: {esc(item_reason)}")
+    error_examples = discovery.get("error_examples") or []
+    if error_examples:
+        lines.extend(["", "⚠️ <b>API помилки</b>"])
+        for error in error_examples[:3]:
+            lines.append(f"• {esc(error)}")
 
     return lines
 
@@ -153,6 +168,8 @@ def zero_reason(diagnostics: dict[str, Any]) -> str:
         return ""
 
     if int_or_zero(discovery.get("api_seen")) == 0:
+        if int_or_zero(discovery.get("api_errors")) > 0:
+            return "API-запити падають, тому scanner не отримав ринки для аналізу."
         return "Polymarket API не повернув ринки або scan не дійшов до discovery."
     if int_or_zero(discovery.get("active_orderbook")) == 0:
         return "ринків багато, але немає активних ринків з orderbook."

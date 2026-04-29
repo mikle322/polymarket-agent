@@ -34,6 +34,15 @@ class PolymarketOrderbook:
     last_trade_price: float | None
 
 
+@dataclass(frozen=True)
+class PolymarketEvent:
+    slug: str
+    title: str
+    active: bool
+    closed: bool
+    markets: list[PolymarketMarket]
+
+
 class PolymarketConnector:
     """Public read-only Polymarket connector for Gamma and CLOB data."""
 
@@ -77,6 +86,32 @@ class PolymarketConnector:
             raise ValueError("unexpected Polymarket markets response")
         return [self._parse_market(item) for item in payload]
 
+    def list_events(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        active: bool = True,
+        closed: bool = False,
+        archived: bool = False,
+        order: str = "volume_24hr",
+        ascending: bool = False,
+    ) -> list[PolymarketEvent]:
+        payload = self._get_json(
+            f"{self.gamma_url}/events",
+            {
+                "limit": str(limit),
+                "offset": str(offset),
+                "active": str(active).lower(),
+                "closed": str(closed).lower(),
+                "archived": str(archived).lower(),
+                "order": order,
+                "ascending": str(ascending).lower(),
+            },
+        )
+        if not isinstance(payload, list):
+            raise ValueError("unexpected Polymarket events response")
+        return [self._parse_event(item) for item in payload]
+
     def get_orderbook(self, token_id: str) -> PolymarketOrderbook:
         payload = self._get_json(f"{self.clob_url}/book", {"token_id": token_id})
         return PolymarketOrderbook(
@@ -119,6 +154,17 @@ class PolymarketConnector:
             closed=bool(payload.get("closed")),
             archived=bool(payload.get("archived")),
             enable_orderbook=bool(payload.get("enableOrderBook")),
+        )
+
+    def _parse_event(self, payload: dict[str, Any]) -> PolymarketEvent:
+        markets_payload = payload.get("markets") or []
+        markets = [self._parse_market(item) for item in markets_payload if isinstance(item, dict)]
+        return PolymarketEvent(
+            slug=str(payload.get("slug", "")),
+            title=str(payload.get("title") or payload.get("question") or ""),
+            active=bool(payload.get("active")),
+            closed=bool(payload.get("closed")),
+            markets=markets,
         )
 
     def _parse_levels(self, levels: list[dict[str, Any]]) -> list[OrderLevel]:

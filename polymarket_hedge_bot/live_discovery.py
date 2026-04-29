@@ -2,12 +2,13 @@ import argparse
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 from polymarket_hedge_bot.connectors.polymarket import PolymarketConnector, PolymarketMarket
 from polymarket_hedge_bot.scout import CandidateMarket
+from polymarket_hedge_bot.utils import safe_print
 
 
 TOUCH_WORDS = (
@@ -46,6 +47,8 @@ BTC_WORDS = ("bitcoin", "btc")
 @dataclass
 class DiscoveryStats:
     api_seen: int = 0
+    api_errors: int = 0
+    event_seen: int = 0
     active_orderbook: int = 0
     btc_related: int = 0
     touch_or_down_keyword: int = 0
@@ -57,9 +60,32 @@ class DiscoveryStats:
     missing_no_price: int = 0
     parsed_before_dedupe: int = 0
     parsed_candidates: int = 0
+    hydrated_by_slug: int = 0
+    failed_examples: list[dict[str, str]] = field(default_factory=list)
+    error_examples: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> dict[str, int]:
+    def to_dict(self) -> dict:
         return asdict(self)
+
+    def add_failed_example(self, market: PolymarketMarket, reason: str) -> None:
+        if len(self.failed_examples) >= 8:
+            return
+        self.failed_examples.append(
+            {
+                "slug": market.slug,
+                "question": market.question,
+                "reason": reason,
+                "end_date": str(market.end_date or ""),
+                "outcomes": ", ".join(str(item) for item in market.outcomes),
+                "prices": ", ".join(str(item) for item in market.outcome_prices),
+                "token_ids": str(len(market.token_ids)),
+            }
+        )
+
+    def add_error_example(self, error: Exception) -> None:
+        self.api_errors += 1
+        if len(self.error_examples) < 5:
+            self.error_examples.append(str(error))
 
 
 def discover_polymarket_btc_candidates(
@@ -101,16 +127,43 @@ def discover_polymarket_btc_candidates_with_stats(
     candidates: list[CandidateMarket] = []
     stats = DiscoveryStats()
 
-    def fetch_page(page: int) -> list[PolymarketMarket]:
+    market_orders = ("volume_24hr", "liquidity", "end_date")
+
+    def fetch_market_page(order: str, page: int) -> list[PolymarketMarket]:
         connector = PolymarketConnector(timeout=timeout)
-        return connector.list_markets(limit=limit, offset=page * limit)
+        return connector.list_markets(limit=limit, offset=page * limit, order=order)
+
+    def fetch_event_page(order: str, page: int) -> list[PolymarketMarket]:
+        connector = PolymarketConnector(timeout=timeout)
+        events = connector.list_events(limit=limit, offset=page * limit, order=order)
+        stats.event_seen += len(events)
+        markets: list[PolymarketMarket] = []
+        for event in events:
+            markets.extend(event.markets)
+        return markets
 
     workers = max(1, min(max_workers, max(1, pages)))
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = [executor.submit(fetch_page, page) for page in range(pages)]
+        futures = []
+        for order in market_orders:
+            futures.extend(executor.submit(fetch_market_page, order, page) for page in range(pages))
+            futures.extend(executor.submit(fetch_event_page, order, page) for page in range(pages))
         for future in as_completed(futures):
-            for market in future.result():
-                candidate = market_to_candidate(market, stake, btc_price, iv, min_liquidity, stats=stats)
+            try:
+                markets = future.result()
+            except Exception as exc:
+                stats.add_error_example(exc)
+                continue
+            for market in dedupe_markets(markets):
+                candidate = market_to_candidate(
+                    market,
+                    stake,
+                    btc_price,
+                    iv,
+                    min_liquidity,
+                    stats=stats,
+                    timeout=timeout,
+                )
                 if candidate is not None:
                     candidates.append(candidate)
 
@@ -118,9 +171,9 @@ def discover_polymarket_btc_candidates_with_stats(
     stats.parsed_candidates = len(deduped)
 
     if debug:
-        print("Discovery debug:")
+        safe_print("Discovery debug:")
         for key, value in stats.to_dict().items():
-            print(f"  {key}: {value}")
+            safe_print(f"  {key}: {value}")
 
     return deduped, stats
 
@@ -132,6 +185,7 @@ def market_to_candidate(
     iv: float,
     min_liquidity: float,
     stats: DiscoveryStats | None = None,
+    timeout: float = 5.0,
 ) -> CandidateMarket | None:
     text = f"{market.question} {market.slug}".lower()
     if stats is not None:
@@ -148,6 +202,8 @@ def market_to_candidate(
         stats.btc_related += 1
 
     if not any(word in text for word in TOUCH_WORDS + DOWN_WORDS):
+        if stats is not None and any(word in text for word in BTC_WORDS):
+            stats.add_failed_example(market, "BTC market, but no touch/down keyword")
         return None
     if stats is not None:
         stats.touch_or_down_keyword += 1
@@ -157,42 +213,67 @@ def market_to_candidate(
             stats.filtered_liquidity += 1
         return None
 
+    enriched_market = market
     strike = parse_strike(text)
     direction = parse_direction(text)
-    deadline = parse_deadline(market.end_date)
-    no_token_id = token_id_for_outcome(market, "No")
-    no_price = price_for_outcome(market, "No")
+    deadline = parse_deadline(enriched_market.end_date)
+    no_token_id = token_id_for_outcome(enriched_market, "No")
+    no_price = price_for_outcome(enriched_market, "No")
+
+    if enriched_market.slug and (deadline is None or no_token_id is None or no_price is None):
+        try:
+            hydrated = PolymarketConnector(timeout=timeout).get_market_by_slug(enriched_market.slug)
+            hydrated_text = f"{hydrated.question} {hydrated.slug}".lower()
+            enriched_market = hydrated
+            text = f"{text} {hydrated_text}"
+            strike = strike or parse_strike(text)
+            direction = direction or parse_direction(text)
+            deadline = deadline or parse_deadline(enriched_market.end_date)
+            no_token_id = no_token_id or token_id_for_outcome(enriched_market, "No")
+            no_price = no_price if no_price is not None else price_for_outcome(enriched_market, "No")
+            if stats is not None:
+                stats.hydrated_by_slug += 1
+        except Exception:
+            pass
 
     missing = False
+    missing_reasons: list[str] = []
     if strike is None:
         missing = True
+        missing_reasons.append("missing strike")
         if stats is not None:
             stats.missing_strike += 1
     if direction is None:
         missing = True
+        missing_reasons.append("missing direction")
         if stats is not None:
             stats.missing_direction += 1
     if deadline is None:
         missing = True
+        missing_reasons.append("missing deadline")
         if stats is not None:
             stats.missing_deadline += 1
     if no_token_id is None:
         missing = True
+        missing_reasons.append("missing NO token id")
         if stats is not None:
             stats.missing_no_token += 1
     if no_price is None:
         missing = True
+        missing_reasons.append("missing NO price")
         if stats is not None:
             stats.missing_no_price += 1
     if missing:
+        if stats is not None:
+            stats.add_failed_example(enriched_market, ", ".join(missing_reasons))
         return None
 
     if stats is not None:
         stats.parsed_before_dedupe += 1
 
     return CandidateMarket(
-        slug=market.slug,
-        question=market.question,
+        slug=enriched_market.slug,
+        question=enriched_market.question,
         strike=strike,
         direction=direction,
         deadline=deadline,
@@ -200,26 +281,30 @@ def market_to_candidate(
         iv=iv,
         no_price=no_price,
         stake=stake,
-        liquidity=market.liquidity,
+        liquidity=enriched_market.liquidity,
         no_token_id=no_token_id,
     )
 
 
 def parse_strike(text: str) -> float | None:
-    patterns: list[tuple[str, bool]] = [
+    patterns: list[tuple[str, bool | str]] = [
         (r"\$\s*([0-9]{2,3}(?:,[0-9]{3})+(?:\.\d+)?)", False),
         (r"\b([0-9]{2,3})\s*k\b", True),
+        (r"\$\s*([0-9]+(?:\.\d+)?)\s*m\b", "millions"),
+        (r"\b([0-9]+(?:\.\d+)?)\s*million\b", "millions"),
         (r"\b([0-9]{5,6})\b", False),
     ]
-    for pattern, is_thousands in patterns:
+    for pattern, multiplier in patterns:
         match = re.search(pattern, text, flags=re.IGNORECASE)
         if not match:
             continue
         raw = match.group(1).replace(",", "")
         value = float(raw)
-        if is_thousands:
+        if multiplier == "millions":
+            value *= 1_000_000
+        elif multiplier:
             value *= 1000
-        if 10_000 <= value <= 500_000:
+        if 10_000 <= value <= 2_000_000:
             return value
     return None
 
@@ -274,6 +359,18 @@ def dedupe_candidates(candidates: list[CandidateMarket]) -> list[CandidateMarket
     return result
 
 
+def dedupe_markets(markets: list[PolymarketMarket]) -> list[PolymarketMarket]:
+    seen: set[str] = set()
+    result: list[PolymarketMarket] = []
+    for market in markets:
+        key = market.slug or market.question
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(market)
+    return result
+
+
 def candidate_to_json(candidate: CandidateMarket) -> dict:
     data = asdict(candidate)
     data["deadline"] = candidate.deadline.isoformat()
@@ -319,9 +416,9 @@ def main() -> int:
     args = build_parser().parse_args()
     if args.inspect:
         markets = inspect_btc_markets(limit=args.limit, pages=args.pages)
-        print(f"Знайдено BTC markets: {len(markets)}")
+        safe_print(f"Знайдено BTC markets: {len(markets)}")
         for index, market in enumerate(markets[:50], start=1):
-            print(
+            safe_print(
                 f"{index}. {market.slug} | active={market.active} orderbook={market.enable_orderbook} "
                 f"liquidity={market.liquidity} | {market.question}"
             )
@@ -344,18 +441,18 @@ def main() -> int:
         debug=args.debug,
     )
 
-    print(f"Знайдено кандидатів: {len(candidates)}")
+    safe_print(f"Знайдено кандидатів: {len(candidates)}")
     if args.debug:
-        print(f"Діагностика: {stats.to_dict()}")
+        safe_print(f"Діагностика: {stats.to_dict()}")
     for index, candidate in enumerate(candidates, start=1):
-        print(
+        safe_print(
             f"{index}. {candidate.slug} | {candidate.direction} {candidate.strike:.0f} | "
             f"NO {candidate.no_price:.3f} | liquidity {candidate.liquidity}"
         )
 
     if args.output:
         save_candidates(args.output, candidates)
-        print(f"Збережено: {args.output}")
+        safe_print(f"Збережено: {args.output}")
     return 0
 
 
