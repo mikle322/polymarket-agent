@@ -1,6 +1,7 @@
 import argparse
 import json
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -115,6 +116,25 @@ def discover_polymarket_btc_candidates(
     return candidates
 
 
+def _is_btc_candidate(market: PolymarketMarket) -> bool:
+    text = f"{market.question} {market.slug}".lower()
+    return (
+        market.active
+        and not market.closed
+        and not market.archived
+        and market.enable_orderbook
+        and any(word in text for word in BTC_WORDS)
+    )
+
+
+def _needs_market_data(market: PolymarketMarket) -> bool:
+    return (
+        parse_deadline(market.end_date) is None
+        or token_id_for_outcome(market, "No") is None
+        or price_for_outcome(market, "No") is None
+    )
+
+
 def discover_polymarket_btc_candidates_with_stats(
     stake: float,
     btc_price: float,
@@ -128,6 +148,7 @@ def discover_polymarket_btc_candidates_with_stats(
 ) -> tuple[list[CandidateMarket], DiscoveryStats]:
     candidates: list[CandidateMarket] = []
     stats = DiscoveryStats()
+    stats_lock = threading.Lock()
 
     market_orders = ("volume_24hr", "liquidity", "end_date")
 
@@ -138,13 +159,19 @@ def discover_polymarket_btc_candidates_with_stats(
     def fetch_event_page(order: str, page: int) -> list[PolymarketMarket]:
         connector = PolymarketConnector(timeout=timeout)
         events = connector.list_events(limit=limit, offset=page * limit, order=order)
-        stats.event_seen += len(events)
+        with stats_lock:
+            stats.event_seen += len(events)
         markets: list[PolymarketMarket] = []
         for event in events:
             markets.extend(event.markets)
         return markets
 
-    workers = max(1, min(max_workers, max(1, pages)))
+    # Bug #3: workers based on actual task count, not just pages
+    total_tasks = len(market_orders) * pages * 2
+    workers = max(1, min(max_workers, total_tasks))
+
+    # Phase 1: parallel fetch — all markets into one flat list
+    all_markets: list[PolymarketMarket] = []
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = []
         for order in market_orders:
@@ -152,22 +179,44 @@ def discover_polymarket_btc_candidates_with_stats(
             futures.extend(executor.submit(fetch_event_page, order, page) for page in range(pages))
         for future in as_completed(futures):
             try:
-                markets = future.result()
+                all_markets.extend(future.result())
             except Exception as exc:
                 stats.add_error_example(exc)
-                continue
-            for market in dedupe_markets(markets):
-                candidate = market_to_candidate(
-                    market,
-                    stake,
-                    btc_price,
-                    iv,
-                    min_liquidity,
-                    stats=stats,
-                    timeout=timeout,
-                )
-                if candidate is not None:
-                    candidates.append(candidate)
+
+    # Bug #1: global dedup before processing — eliminates duplicate stats and hydrations
+    unique_markets = dedupe_markets(all_markets)
+
+    # Bug #2: parallel hydration for BTC candidates that are missing data
+    to_hydrate = [m for m in unique_markets if m.slug and _is_btc_candidate(m) and _needs_market_data(m)]
+    if to_hydrate:
+        hydrated_map: dict[str, PolymarketMarket] = {}
+        hydration_workers = max(1, min(max_workers, len(to_hydrate)))
+
+        def do_hydrate(m: PolymarketMarket) -> tuple[str, PolymarketMarket | None]:
+            try:
+                return m.slug, PolymarketConnector(timeout=timeout).get_market_by_slug(m.slug)
+            except Exception:
+                return m.slug, None
+
+        with ThreadPoolExecutor(max_workers=hydration_workers) as executor:
+            for future in as_completed([executor.submit(do_hydrate, m) for m in to_hydrate]):
+                try:
+                    slug, hydrated = future.result()
+                    if hydrated is not None:
+                        hydrated_map[slug] = hydrated
+                        stats.hydrated_by_slug += 1
+                except Exception:
+                    pass
+
+        unique_markets = [hydrated_map.get(m.slug, m) if m.slug else m for m in unique_markets]
+
+    # Phase 3: sequential processing — no more blocking network calls
+    for market in unique_markets:
+        candidate = market_to_candidate(
+            market, stake, btc_price, iv, min_liquidity, stats=stats, timeout=timeout
+        )
+        if candidate is not None:
+            candidates.append(candidate)
 
     deduped = dedupe_candidates(candidates)
     stats.parsed_candidates = len(deduped)
@@ -305,7 +354,7 @@ def market_to_candidate(
 
 def parse_strike(text: str) -> float | None:
     patterns: list[tuple[str, bool | str]] = [
-        (r"\$\s*([0-9]{2,3}(?:,[0-9]{3})+(?:\.\d+)?)", False),
+        (r"\$\s*([0-9]{1,3}(?:,[0-9]{3})+(?:\.\d+)?)", False),
         (r"\b([0-9]{2,3})\s*k\b", True),
         (r"\$\s*([0-9]+(?:\.\d+)?)\s*m\b", "millions"),
         (r"\b([0-9]+(?:\.\d+)?)\s*million\b", "millions"),
@@ -360,9 +409,13 @@ def strike_distance_ok(strike: float, direction: str, btc_price: float) -> bool:
 
 
 def parse_direction(text: str) -> str | None:
-    if any(word in text for word in DOWN_WORDS):
+    has_down = any(word in text for word in DOWN_WORDS)
+    has_up = any(word in text for word in TOUCH_WORDS)
+    if has_down and has_up:
+        return None
+    if has_down:
         return "down"
-    if any(word in text for word in TOUCH_WORDS):
+    if has_up:
         return "up"
     return None
 

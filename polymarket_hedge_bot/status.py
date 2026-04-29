@@ -84,6 +84,7 @@ def render_scanner_status() -> str:
             f"• Min edge: <b>{format_optional_percent(status.get('min_edge'))}</b>",
             f"• Min NO wins: <b>{format_optional_percent(status.get('min_positive_probability'))}</b>",
             f"• Min time to deadline: <b>{format_optional_hours(status.get('min_hours_to_deadline'))}</b>",
+            f"• Max time to deadline: <b>{format_optional_hours(status.get('max_hours_to_deadline'))}</b>",
             f"• NO price range: <b>{format_optional_price(status.get('min_no_price'))} - {format_optional_price(status.get('max_no_price'))}</b>",
             f"• Min net upside: <b>${float(status.get('min_net_upside', 0.0)):.2f}</b>",
             f"• Min reward/risk: <b>{status.get('min_reward_risk', 'n/a')}</b>",
@@ -132,6 +133,7 @@ def render_radar_status() -> str:
         f"• Min edge: <b>{format_optional_percent(status.get('radar_min_edge'))}</b>",
         f"• Min NO wins: <b>{format_optional_percent(status.get('radar_min_positive_probability'))}</b>",
         f"• Min time to deadline: <b>{format_optional_hours(status.get('radar_min_hours_to_deadline'))}</b>",
+        f"• Max time to deadline: <b>{format_optional_hours(status.get('radar_max_hours_to_deadline'))}</b>",
         f"• NO price range: <b>{format_optional_price(status.get('radar_min_no_price'))} - {format_optional_price(status.get('radar_max_no_price'))}</b>",
         f"• Min net upside: <b>{money(float(status.get('radar_min_net_upside', 0.0)))}</b>",
         f"• Min reward/risk: <b>{status.get('radar_min_reward_risk', 'n/a')}</b>",
@@ -222,6 +224,8 @@ def render_prefilter_block(diagnostics: dict[str, Any]) -> list[str]:
         f"• До pre-filter: <b>{diagnostics.get('candidates_loaded', 'n/a')}</b>",
         f"• Після pre-filter: <b>{diagnostics.get('candidates_after_prefilter', 'n/a')}</b>",
         f"• Відсіяно по дедлайну: <b>{prefilter.get('deadline_filtered', 0)}</b>",
+        f"  - занадто близько: <b>{prefilter.get('deadline_too_close_filtered', 0)}</b>",
+        f"  - занадто далеко: <b>{prefilter.get('deadline_too_far_filtered', 0)}</b>",
         f"• Відсіяно по NO price: <b>{prefilter.get('no_price_filtered', 0)}</b>",
     ]
     examples = prefilter.get("examples") or []
@@ -337,7 +341,10 @@ def zero_reason(diagnostics: dict[str, Any]) -> str:
         diagnostics.get("candidates_after_prefilter")
     ) == 0:
         deadline_filtered = int_or_zero(prefilter.get("deadline_filtered"))
+        deadline_too_far_filtered = int_or_zero(prefilter.get("deadline_too_far_filtered"))
         no_price_filtered = int_or_zero(prefilter.get("no_price_filtered"))
+        if deadline_too_far_filtered:
+            return "угоди є, але вони далі нашого горизонту day/week/month і не підходять для швидкої стратегії."
         if deadline_filtered and no_price_filtered:
             return "кандидати були, але pre-filter відсіяв їх через близький дедлайн або нездорову ціну NO."
         if deadline_filtered:
@@ -429,7 +436,10 @@ def format_optional_hours(value: Any) -> str:
     if value is None:
         return "n/a"
     try:
-        return f"{float(value):.1f}h"
+        hours = float(value)
+        if hours >= 24.0:
+            return f"{hours / 24.0:.1f}d"
+        return f"{hours:.1f}h"
     except (TypeError, ValueError):
         return esc(value)
 

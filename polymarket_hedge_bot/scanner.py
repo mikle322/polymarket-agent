@@ -51,6 +51,7 @@ class ScannerConfig:
     min_edge: float
     min_positive_probability: float
     min_hours_to_deadline: float
+    max_hours_to_deadline: float
     min_no_price: float
     max_no_price: float
     radar_enabled: bool
@@ -59,6 +60,7 @@ class ScannerConfig:
     radar_min_edge: float
     radar_min_positive_probability: float
     radar_min_hours_to_deadline: float
+    radar_max_hours_to_deadline: float
     radar_min_no_price: float
     radar_max_no_price: float
     radar_min_net_upside: float
@@ -99,6 +101,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-edge", type=float, default=0.10)
     parser.add_argument("--min-positive-probability", type=float, default=0.60)
     parser.add_argument("--min-hours-to-deadline", type=float, default=6.0)
+    parser.add_argument(
+        "--max-days-to-deadline",
+        type=float,
+        default=45.0,
+        help="Ignore markets that settle later than this many days. Default keeps daily/weekly/monthly markets.",
+    )
     parser.add_argument("--min-no-price", type=float, default=0.05)
     parser.add_argument("--max-no-price", type=float, default=0.90)
     parser.add_argument("--no-radar", action="store_true", help="Disable soft radar candidates in scanner status")
@@ -107,6 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--radar-min-edge", type=float, default=0.0)
     parser.add_argument("--radar-min-positive-probability", type=float, default=0.50)
     parser.add_argument("--radar-min-hours-to-deadline", type=float, default=3.0)
+    parser.add_argument("--radar-max-days-to-deadline", type=float, default=45.0)
     parser.add_argument("--radar-min-no-price", type=float, default=0.03)
     parser.add_argument("--radar-max-no-price", type=float, default=0.97)
     parser.add_argument("--radar-min-net-upside", type=float, default=0.0)
@@ -149,6 +158,7 @@ def config_from_args(args: argparse.Namespace) -> ScannerConfig:
         min_edge=args.min_edge,
         min_positive_probability=args.min_positive_probability,
         min_hours_to_deadline=args.min_hours_to_deadline,
+        max_hours_to_deadline=args.max_days_to_deadline * 24.0,
         min_no_price=args.min_no_price,
         max_no_price=args.max_no_price,
         radar_enabled=not args.no_radar,
@@ -157,6 +167,7 @@ def config_from_args(args: argparse.Namespace) -> ScannerConfig:
         radar_min_edge=args.radar_min_edge,
         radar_min_positive_probability=args.radar_min_positive_probability,
         radar_min_hours_to_deadline=args.radar_min_hours_to_deadline,
+        radar_max_hours_to_deadline=args.radar_max_days_to_deadline * 24.0,
         radar_min_no_price=args.radar_min_no_price,
         radar_max_no_price=args.radar_max_no_price,
         radar_min_net_upside=args.radar_min_net_upside,
@@ -314,6 +325,7 @@ def radar_config(config: ScannerConfig) -> ScannerConfig:
     return dataclasses.replace(
         config,
         min_hours_to_deadline=config.radar_min_hours_to_deadline,
+        max_hours_to_deadline=config.radar_max_hours_to_deadline,
         min_no_price=config.radar_min_no_price,
         max_no_price=config.radar_max_no_price,
         min_net_upside=config.radar_min_net_upside,
@@ -331,20 +343,13 @@ def evaluate_radar(
         return {"enabled": False}
 
     matched: list[Opportunity] = []
-    rejected_by = {
-        "score": 0,
-        "edge": 0,
-        "positive_probability": 0,
-        "net_upside": 0,
-        "reward_risk": 0,
-        "liquidity": 0,
-    }
+    rejected_by: dict[str, int] = {}
     for opportunity in opportunities:
         reject_reason = radar_reject_reason(opportunity, config)
         if reject_reason is None:
             matched.append(opportunity)
         else:
-            rejected_by[reject_reason] += 1
+            rejected_by[reject_reason] = rejected_by.get(reject_reason, 0) + 1
     return {
         "enabled": True,
         "candidates_after_prefilter": len(opportunities) + len(evaluation_errors),
@@ -413,6 +418,8 @@ def prefilter_candidates(candidates: list[Any], config: ScannerConfig) -> tuple[
     now = datetime.now(timezone.utc)
     kept: list[Any] = []
     deadline_filtered = 0
+    deadline_too_close_filtered = 0
+    deadline_too_far_filtered = 0
     no_price_filtered = 0
     examples: list[dict[str, str]] = []
 
@@ -420,10 +427,21 @@ def prefilter_candidates(candidates: list[Any], config: ScannerConfig) -> tuple[
         hours_to_deadline = (candidate.deadline - now).total_seconds() / 3600
         if hours_to_deadline < config.min_hours_to_deadline:
             deadline_filtered += 1
+            deadline_too_close_filtered += 1
             add_prefilter_example(
                 examples,
                 candidate,
                 f"дедлайн надто близько: {hours_to_deadline:.1f}h < {config.min_hours_to_deadline:.1f}h",
+            )
+            continue
+
+        if config.max_hours_to_deadline > 0 and hours_to_deadline > config.max_hours_to_deadline:
+            deadline_filtered += 1
+            deadline_too_far_filtered += 1
+            add_prefilter_example(
+                examples,
+                candidate,
+                f"дедлайн надто далеко: {hours_to_deadline / 24.0:.1f}d > {config.max_hours_to_deadline / 24.0:.1f}d",
             )
             continue
 
@@ -440,6 +458,8 @@ def prefilter_candidates(candidates: list[Any], config: ScannerConfig) -> tuple[
 
     return kept, {
         "deadline_filtered": deadline_filtered,
+        "deadline_too_close_filtered": deadline_too_close_filtered,
+        "deadline_too_far_filtered": deadline_too_far_filtered,
         "no_price_filtered": no_price_filtered,
         "examples": examples[:6],
     }
@@ -661,6 +681,14 @@ def save_state(state: dict[str, Any]) -> None:
     SCANNER_STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def cleanup_state(state: dict[str, Any], max_age_seconds: float = 7 * 24 * 3600) -> int:
+    now = time.time()
+    stale = [key for key, entry in state.items() if now - float(entry.get("sent_at", 0)) > max_age_seconds]
+    for key in stale:
+        del state[key]
+    return len(stale)
+
+
 def build_telegram_bot(dry_run: bool) -> tuple[TelegramBot | None, str | None]:
     if dry_run:
         return None, None
@@ -691,6 +719,7 @@ def run_scanner_loop(
         f"min_score={config.min_score}, "
         f"min_edge={config.min_edge}, "
         f"min_hours_to_deadline={config.min_hours_to_deadline}, "
+        f"max_days_to_deadline={config.max_hours_to_deadline / 24.0:.1f}, "
         f"no_price={config.min_no_price}-{config.max_no_price}"
     )
 
@@ -714,6 +743,9 @@ def run_scanner_loop(
                 if bot is not None and chat_id is not None:
                     bot.send_report(chat_id, TelegramResponse(text=review_text, html=True))
             if not dry_run:
+                cleaned = cleanup_state(state)
+                if cleaned:
+                    safe_print(f"Cleaned {cleaned} stale state entries")
                 save_state(state)
             diagnostics.setdefault("timings", {})["scan_loop_seconds"] = elapsed_seconds(scan_started)
             write_scan_status(
@@ -781,6 +813,7 @@ def write_scan_status(
             "min_edge": config.min_edge,
             "min_positive_probability": config.min_positive_probability,
             "min_hours_to_deadline": config.min_hours_to_deadline,
+            "max_hours_to_deadline": config.max_hours_to_deadline,
             "min_no_price": config.min_no_price,
             "max_no_price": config.max_no_price,
             "radar_enabled": config.radar_enabled,
@@ -789,6 +822,7 @@ def write_scan_status(
             "radar_min_edge": config.radar_min_edge,
             "radar_min_positive_probability": config.radar_min_positive_probability,
             "radar_min_hours_to_deadline": config.radar_min_hours_to_deadline,
+            "radar_max_hours_to_deadline": config.radar_max_hours_to_deadline,
             "radar_min_no_price": config.radar_min_no_price,
             "radar_max_no_price": config.radar_max_no_price,
             "radar_min_net_upside": config.radar_min_net_upside,
