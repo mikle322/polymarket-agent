@@ -67,6 +67,7 @@ def render_scanner_status() -> str:
         lines.append(f"• Радар-кандидатів: <b>{radar.get('matched', 0)}</b>")
     lines.extend(render_diagnostics_block(diagnostics))
     lines.extend(render_prefilter_block(diagnostics))
+    lines.extend(render_radar_diagnostics_block(diagnostics))
     lines.extend(render_timings_block(diagnostics))
 
     lines.extend(
@@ -124,6 +125,7 @@ def render_radar_status() -> str:
         f"• Після radar pre-filter: <b>{radar.get('candidates_after_prefilter', 'n/a')}</b>",
         f"• Проаналізовано: <b>{radar.get('opportunities_analyzed', 'n/a')}</b>",
         f"• Цікавих для radar: <b>{radar.get('matched', 0)}</b>",
+        f"• Відсіяно radar-фільтрами: <b>{radar.get('rejected', 0)}</b>",
         "",
         "🎚 <b>М'які фільтри radar</b>",
         f"• Min score: <b>{status.get('radar_min_score', 'n/a')}</b>",
@@ -136,9 +138,11 @@ def render_radar_status() -> str:
     ]
 
     if not top:
+        lines.extend(render_radar_rejection_lines(radar))
         lines.extend(["", f"💡 <b>Чому порожньо:</b> {esc(radar_zero_reason(radar))}"])
         return "\n".join(lines)
 
+    lines.extend(render_radar_rejection_lines(radar))
     lines.extend(["", "📌 <b>Найцікавіші зараз</b>"])
     for index, item in enumerate(top, start=1):
         lines.extend(
@@ -158,6 +162,22 @@ def render_radar_status() -> str:
     return "\n".join(lines)
 
 
+def render_radar_rejection_lines(radar: dict[str, Any]) -> list[str]:
+    rejected_by = radar.get("rejected_by") or {}
+    if not rejected_by:
+        return []
+    return [
+        "",
+        "🧪 <b>Чому radar відсіює</b>",
+        f"• Score: <b>{rejected_by.get('score', 0)}</b>",
+        f"• Edge: <b>{rejected_by.get('edge', 0)}</b>",
+        f"• Ймовірність: <b>{rejected_by.get('positive_probability', 0)}</b>",
+        f"• Net upside: <b>{rejected_by.get('net_upside', 0)}</b>",
+        f"• Reward/Risk: <b>{rejected_by.get('reward_risk', 0)}</b>",
+        f"• Ліквідність: <b>{rejected_by.get('liquidity', 0)}</b>",
+    ]
+
+
 def radar_zero_reason(radar: dict[str, Any]) -> str:
     prefilter = radar.get("prefilter") or {}
     if int_or_zero(radar.get("candidates_after_prefilter")) == 0:
@@ -169,6 +189,26 @@ def radar_zero_reason(radar: dict[str, Any]) -> str:
     if int_or_zero(radar.get("opportunities_analyzed")) == 0:
         return "кандидати були, але hedge-аналіз їх не пропустив через некоректні або ризикові вхідні дані."
     return "угоди є, але вони не проходять навіть м'які radar-фільтри score, edge, net upside, reward/risk або ліквідності."
+
+
+def render_radar_diagnostics_block(diagnostics: dict[str, Any]) -> list[str]:
+    radar = diagnostics.get("radar") or {}
+    if not radar.get("enabled"):
+        return []
+
+    lines = [
+        "",
+        "🔭 <b>Діагностика radar</b>",
+        f"• Після radar pre-filter: <b>{radar.get('candidates_after_prefilter', 'n/a')}</b>",
+        f"• Проаналізовано radar: <b>{radar.get('opportunities_analyzed', 'n/a')}</b>",
+        f"• Пройшли radar: <b>{radar.get('matched', 0)}</b>",
+        f"• Відсіяно radar: <b>{radar.get('rejected', 0)}</b>",
+    ]
+    lines.extend(render_radar_rejection_lines(radar))
+    evaluation_errors = radar.get("evaluation_errors") or []
+    if evaluation_errors:
+        lines.append(f"• Помилки radar hedge-аналізу: <b>{len(evaluation_errors)}</b>")
+    return lines
 
 
 def render_prefilter_block(diagnostics: dict[str, Any]) -> list[str]:

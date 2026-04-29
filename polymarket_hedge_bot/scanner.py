@@ -103,14 +103,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-no-price", type=float, default=0.90)
     parser.add_argument("--no-radar", action="store_true", help="Disable soft radar candidates in scanner status")
     parser.add_argument("--radar-top", type=int, default=5)
-    parser.add_argument("--radar-min-score", type=float, default=25.0)
+    parser.add_argument("--radar-min-score", type=float, default=10.0)
     parser.add_argument("--radar-min-edge", type=float, default=0.0)
     parser.add_argument("--radar-min-positive-probability", type=float, default=0.50)
     parser.add_argument("--radar-min-hours-to-deadline", type=float, default=3.0)
     parser.add_argument("--radar-min-no-price", type=float, default=0.03)
-    parser.add_argument("--radar-max-no-price", type=float, default=0.95)
-    parser.add_argument("--radar-min-net-upside", type=float, default=10.0)
-    parser.add_argument("--radar-min-reward-risk", type=float, default=0.10)
+    parser.add_argument("--radar-max-no-price", type=float, default=0.97)
+    parser.add_argument("--radar-min-net-upside", type=float, default=0.0)
+    parser.add_argument("--radar-min-reward-risk", type=float, default=0.0)
     parser.add_argument("--cooldown-min", type=float, default=30.0)
     parser.add_argument("--live-orderbook", action="store_true")
     parser.add_argument("--max-slippage", type=float, default=0.03)
@@ -330,12 +330,28 @@ def evaluate_radar(
     if not config.radar_enabled:
         return {"enabled": False}
 
-    matched = [opportunity for opportunity in opportunities if should_radar(opportunity, config)]
+    matched: list[Opportunity] = []
+    rejected_by = {
+        "score": 0,
+        "edge": 0,
+        "positive_probability": 0,
+        "net_upside": 0,
+        "reward_risk": 0,
+        "liquidity": 0,
+    }
+    for opportunity in opportunities:
+        reject_reason = radar_reject_reason(opportunity, config)
+        if reject_reason is None:
+            matched.append(opportunity)
+        else:
+            rejected_by[reject_reason] += 1
     return {
         "enabled": True,
         "candidates_after_prefilter": len(opportunities) + len(evaluation_errors),
         "opportunities_analyzed": len(opportunities),
         "matched": len(matched),
+        "rejected": len(opportunities) - len(matched),
+        "rejected_by": rejected_by,
         "prefilter": prefilter_stats,
         "evaluation_errors": evaluation_errors,
         "top": [serialize_radar_opportunity(opportunity) for opportunity in matched[: config.radar_top]],
@@ -343,19 +359,23 @@ def evaluate_radar(
 
 
 def should_radar(opportunity: Opportunity, config: ScannerConfig) -> bool:
+    return radar_reject_reason(opportunity, config) is None
+
+
+def radar_reject_reason(opportunity: Opportunity, config: ScannerConfig) -> str | None:
     if opportunity.score < config.radar_min_score:
-        return False
+        return "score"
     if opportunity.edge.true_edge < config.radar_min_edge:
-        return False
+        return "edge"
     if positive_result_probability(opportunity.edge, opportunity.costs) < config.radar_min_positive_probability:
-        return False
+        return "positive_probability"
     if opportunity.quality.net_upside < config.radar_min_net_upside:
-        return False
+        return "net_upside"
     if opportunity.quality.reward_risk < config.radar_min_reward_risk:
-        return False
+        return "reward_risk"
     if not opportunity.liquidity.ok:
-        return False
-    return True
+        return "liquidity"
+    return None
 
 
 def serialize_radar_opportunity(opportunity: Opportunity) -> dict[str, Any]:
