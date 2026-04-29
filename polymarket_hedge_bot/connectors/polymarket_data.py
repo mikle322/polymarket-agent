@@ -38,8 +38,14 @@ class PolymarketPosition:
 class PolymarketDataConnector:
     """Public read-only Polymarket Data API connector."""
 
-    def __init__(self, data_url: str = "https://data-api.polymarket.com", timeout: float = 10.0) -> None:
+    def __init__(
+        self,
+        data_url: str = "https://data-api.polymarket.com",
+        gamma_url: str = "https://gamma-api.polymarket.com",
+        timeout: float = 10.0,
+    ) -> None:
         self.data_url = data_url.rstrip("/")
+        self.gamma_url = gamma_url.rstrip("/")
         self.timeout = timeout
 
     def get_positions(
@@ -65,6 +71,13 @@ class PolymarketDataConnector:
         if not isinstance(payload, list):
             raise ValueError("unexpected Polymarket positions response")
         return [self._parse_position(item) for item in payload if isinstance(item, dict)]
+
+    def get_proxy_wallet(self, address: str) -> str | None:
+        payload = self._get_json(f"{self.gamma_url}/public-profile", {"address": address})
+        if not isinstance(payload, dict):
+            return None
+        proxy_wallet = payload.get("proxyWallet")
+        return str(proxy_wallet) if proxy_wallet else None
 
     def _get_json(self, url: str, params: dict[str, str] | None = None) -> Any:
         if params:

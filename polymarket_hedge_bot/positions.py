@@ -40,7 +40,7 @@ def render_wallet_positions(wallet: str | None = None, limit: int = 12, timeout:
 
     connector = PolymarketDataConnector(timeout=timeout)
     try:
-        positions = connector.get_positions(wallet, limit=limit, size_threshold=0.0, sort_by="CURRENT")
+        positions, checked_wallets, proxy_wallet = load_positions_with_proxy_fallback(connector, wallet, limit)
     except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
         return (
             "⚠️ <b>Не вдалося отримати позиції Polymarket</b>\n"
@@ -50,10 +50,48 @@ def render_wallet_positions(wallet: str | None = None, limit: int = 12, timeout:
             "Це read-only запит до <code>data-api.polymarket.com/positions</code>. "
             "На VPS має працювати, якщо сервер має доступ до інтернету."
         )
-    return render_positions_card(wallet, positions, limit=limit)
+    return render_positions_card(wallet, positions, limit=limit, checked_wallets=checked_wallets, proxy_wallet=proxy_wallet)
 
 
-def render_positions_card(wallet: str, positions: list[PolymarketPosition], limit: int = 12) -> str:
+def load_positions_with_proxy_fallback(
+    connector: PolymarketDataConnector,
+    wallet: str,
+    limit: int,
+) -> tuple[list[PolymarketPosition], list[str], str | None]:
+    checked_wallets: list[str] = []
+    proxy_wallet: str | None = None
+
+    try:
+        proxy_wallet = connector.get_proxy_wallet(wallet)
+    except (HTTPError, URLError, TimeoutError, OSError, ValueError):
+        proxy_wallet = None
+
+    wallets = []
+    if proxy_wallet:
+        wallets.append(proxy_wallet)
+    wallets.append(wallet)
+
+    seen: set[str] = set()
+    for candidate_wallet in wallets:
+        normalized = candidate_wallet.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        checked_wallets.append(candidate_wallet)
+        positions = connector.get_positions(candidate_wallet, limit=limit, size_threshold=0.0, sort_by="CURRENT")
+        if any(position.size > 0 for position in positions):
+            return positions, checked_wallets, proxy_wallet
+
+    return [], checked_wallets, proxy_wallet
+
+
+def render_positions_card(
+    wallet: str,
+    positions: list[PolymarketPosition],
+    limit: int = 12,
+    checked_wallets: list[str] | None = None,
+    proxy_wallet: str | None = None,
+) -> str:
     active = [position for position in positions if position.size > 0]
     total_current = sum(position.current_value for position in active)
     total_initial = sum(position.initial_value for position in active)
@@ -66,6 +104,7 @@ def render_positions_card(wallet: str, positions: list[PolymarketPosition], limi
         "💼 <b>Мої позиції Polymarket</b>",
         "━━━━━━━━━━━━━━━━",
         f"👛 Wallet: <code>{html.escape(short_wallet(wallet))}</code>",
+        f"🔎 Checked: <code>{html.escape(', '.join(short_wallet(item) for item in (checked_wallets or [wallet])))}</code>",
         f"📌 Активних позицій: <b>{len(active)}</b>",
         f"💵 Current value: <b>{money(total_current)}</b>",
         f"🧾 Cost basis: <b>{money(total_initial)}</b>",
@@ -78,7 +117,10 @@ def render_positions_card(wallet: str, positions: list[PolymarketPosition], limi
         lines.extend(
             [
                 "",
-                "Позицій не знайдено. Якщо ти точно маєш угоди, перевір, що вказана саме proxy wallet адреса Polymarket.",
+                proxy_hint(proxy_wallet),
+                "Позицій не знайдено. Якщо ти точно маєш угоди, найімовірніше потрібна інша proxy wallet адреса Polymarket.",
+                "",
+                "Де взяти proxy wallet: Polymarket → profile/settings → адреса під профілем. Можеш також надіслати посилання на свій Polymarket profile.",
             ]
         )
         return "\n".join(lines)
@@ -94,6 +136,12 @@ def render_positions_card(wallet: str, positions: list[PolymarketPosition], limi
         ]
     )
     return "\n".join(lines)
+
+
+def proxy_hint(proxy_wallet: str | None) -> str:
+    if proxy_wallet:
+        return f"Знайдений proxy wallet: <code>{html.escape(short_wallet(proxy_wallet))}</code>"
+    return "Proxy wallet автоматично не знайдено для цієї адреси."
 
 
 def render_position_lines(index: int, position: PolymarketPosition) -> list[str]:
