@@ -10,6 +10,7 @@ from polymarket_hedge_bot.formatting import money
 
 WALLET_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
 ACTIVE_SIZE_THRESHOLD = 0.01
+POSITIONS_FETCH_LIMIT = 100
 
 
 def wallet_from_text(text: str) -> str | None:
@@ -81,7 +82,7 @@ def load_positions_with_proxy_fallback(
         checked_wallets.append(candidate_wallet)
         positions = connector.get_positions(
             candidate_wallet,
-            limit=limit,
+            limit=max(limit, POSITIONS_FETCH_LIMIT),
             size_threshold=ACTIVE_SIZE_THRESHOLD,
             sort_by="CURRENT",
         )
@@ -153,7 +154,20 @@ def proxy_hint(proxy_wallet: str | None) -> str:
 
 
 def only_active_positions(positions: list[PolymarketPosition]) -> list[PolymarketPosition]:
-    return [position for position in positions if position.size > ACTIVE_SIZE_THRESHOLD]
+    now = datetime.now(timezone.utc)
+    active: list[PolymarketPosition] = []
+    for position in positions:
+        if position.size <= ACTIVE_SIZE_THRESHOLD:
+            continue
+        if position.redeemable or position.mergeable:
+            continue
+        deadline = parse_date(position.end_date)
+        if deadline is not None and deadline <= now:
+            continue
+        if position.current_value <= 0 or position.cur_price <= 0:
+            continue
+        active.append(position)
+    return active
 
 
 def render_position_lines(index: int, position: PolymarketPosition) -> list[str]:
