@@ -4,6 +4,7 @@ import json
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -187,20 +188,75 @@ def risk_config(config: ScannerConfig) -> RiskConfig:
     )
 
 
+def with_live_market_inputs(config: ScannerConfig) -> tuple[ScannerConfig, dict[str, float]]:
+    needs_market_data = config.live_polymarket and (config.live_btc_price is None or config.funding_rate is None)
+    needs_iv = config.live_polymarket and config.live_iv is None
+    timings = {
+        "market_data_seconds": 0.0,
+        "iv_seconds": 0.0,
+    }
+    if not needs_market_data and not needs_iv:
+        return config, timings
+
+    results: dict[str, ScannerConfig] = {}
+
+    def timed_market_data() -> ScannerConfig:
+        started = time.perf_counter()
+        try:
+            return with_live_binance_data(config)
+        finally:
+            timings["market_data_seconds"] = elapsed_seconds(started)
+
+    def timed_iv() -> ScannerConfig:
+        started = time.perf_counter()
+        try:
+            return with_live_deribit_iv(config)
+        finally:
+            timings["iv_seconds"] = elapsed_seconds(started)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = {}
+        if needs_market_data:
+            futures[executor.submit(timed_market_data)] = "market"
+        if needs_iv:
+            futures[executor.submit(timed_iv)] = "iv"
+        for future in as_completed(futures):
+            results[futures[future]] = future.result()
+
+    changes: dict[str, Any] = {}
+    market_config = results.get("market")
+    if market_config is not None:
+        changes["live_btc_price"] = market_config.live_btc_price
+        changes["funding_rate"] = market_config.funding_rate
+    iv_config = results.get("iv")
+    if iv_config is not None:
+        changes["live_iv"] = iv_config.live_iv
+    if not changes:
+        return config, timings
+    return dataclasses.replace(config, **changes), timings
+
+
 def run_scan(config: ScannerConfig) -> list[Opportunity]:
     opportunities, effective_config, _diagnostics = evaluate_opportunities(config)
     return [opportunity for opportunity in opportunities if should_alert(opportunity, effective_config)]
 
 
 def evaluate_opportunities(config: ScannerConfig) -> tuple[list[Opportunity], ScannerConfig, dict[str, Any]]:
-    config = with_live_binance_data(config)
-    config = with_live_deribit_iv(config)
-    diagnostics: dict[str, Any] = {}
+    evaluate_started = time.perf_counter()
+    timings: dict[str, float] = {}
+
+    started = time.perf_counter()
+    config, input_timings = with_live_market_inputs(config)
+    timings.update(input_timings)
+    timings["market_inputs_total_seconds"] = elapsed_seconds(started)
+
+    diagnostics: dict[str, Any] = {"timings": timings}
     if config.live_polymarket:
         if config.live_btc_price is None:
             raise ValueError("--btc-price is required with --live-polymarket when Binance price is unavailable")
         if config.live_iv is None:
             raise ValueError("--iv is required with --live-polymarket")
+        started = time.perf_counter()
         candidates, discovery_stats = discover_polymarket_btc_candidates_with_stats(
             stake=config.live_stake,
             btc_price=config.live_btc_price,
@@ -211,27 +267,47 @@ def evaluate_opportunities(config: ScannerConfig) -> tuple[list[Opportunity], Sc
             timeout=config.http_timeout,
             max_workers=config.max_workers,
         )
+        timings["discovery_seconds"] = elapsed_seconds(started)
         diagnostics["discovery"] = discovery_stats.to_dict()
     else:
+        started = time.perf_counter()
         candidates = load_candidates(config.candidates)
+        timings["candidate_load_seconds"] = elapsed_seconds(started)
         diagnostics["discovery"] = {
             "source": "candidate_file",
             "parsed_candidates": len(candidates),
         }
     all_candidates = candidates
     candidates_loaded = len(all_candidates)
-    candidates, prefilter_stats = prefilter_candidates(all_candidates, config)
+
+    analysis_config = radar_config(config) if config.radar_enabled else config
+    analysis_candidates, analysis_prefilter_stats = prefilter_candidates(all_candidates, analysis_config)
+    strict_candidates, prefilter_stats = prefilter_candidates(all_candidates, config)
+    strict_slugs = {candidate.slug for candidate in strict_candidates}
+
+    started = time.perf_counter()
     opportunities, evaluation_errors = scout_candidates_safe(
-        candidates,
-        config,
+        analysis_candidates,
+        analysis_config,
     )
+    timings["hedge_analysis_seconds"] = elapsed_seconds(started)
+
+    strict_opportunities = [opportunity for opportunity in opportunities if opportunity.candidate.slug in strict_slugs]
     diagnostics["candidates_loaded"] = candidates_loaded
     diagnostics["prefilter"] = prefilter_stats
-    diagnostics["candidates_after_prefilter"] = len(candidates)
-    diagnostics["opportunities_analyzed"] = len(opportunities)
+    diagnostics["candidates_after_prefilter"] = len(strict_candidates)
+    diagnostics["analysis_prefilter"] = analysis_prefilter_stats
+    diagnostics["analysis_candidates_after_prefilter"] = len(analysis_candidates)
+    diagnostics["shared_analysis_opportunities"] = len(opportunities)
+    diagnostics["opportunities_analyzed"] = len(strict_opportunities)
     diagnostics["evaluation_errors"] = evaluation_errors
-    diagnostics["radar"] = evaluate_radar(all_candidates, config)
-    return opportunities, config, diagnostics
+    diagnostics["radar"] = evaluate_radar(opportunities, config, analysis_prefilter_stats, evaluation_errors)
+    timings["evaluate_total_seconds"] = elapsed_seconds(evaluate_started)
+    return strict_opportunities, config, diagnostics
+
+
+def elapsed_seconds(started: float) -> float:
+    return round(time.perf_counter() - started, 3)
 
 
 def radar_config(config: ScannerConfig) -> ScannerConfig:
@@ -245,17 +321,19 @@ def radar_config(config: ScannerConfig) -> ScannerConfig:
     )
 
 
-def evaluate_radar(candidates: list[Any], config: ScannerConfig) -> dict[str, Any]:
+def evaluate_radar(
+    opportunities: list[Opportunity],
+    config: ScannerConfig,
+    prefilter_stats: dict[str, Any],
+    evaluation_errors: list[dict[str, str]],
+) -> dict[str, Any]:
     if not config.radar_enabled:
         return {"enabled": False}
 
-    soft_config = radar_config(config)
-    radar_candidates, prefilter_stats = prefilter_candidates(candidates, soft_config)
-    opportunities, evaluation_errors = scout_candidates_safe(radar_candidates, soft_config)
     matched = [opportunity for opportunity in opportunities if should_radar(opportunity, config)]
     return {
         "enabled": True,
-        "candidates_after_prefilter": len(radar_candidates),
+        "candidates_after_prefilter": len(opportunities) + len(evaluation_errors),
         "opportunities_analyzed": len(opportunities),
         "matched": len(matched),
         "prefilter": prefilter_stats,
@@ -361,27 +439,33 @@ def add_prefilter_example(examples: list[dict[str, str]], candidate: Any, reason
 def scout_candidates_safe(candidates: list, config: ScannerConfig) -> tuple[list[Opportunity], list[dict[str, str]]]:
     opportunities: list[Opportunity] = []
     errors: list[dict[str, str]] = []
-    for candidate in candidates:
-        try:
-            result = scout_candidates(
-                [candidate],
-                risk_config(config),
-                max_futures_margin=config.max_futures_margin,
-                use_live_orderbook=config.live_orderbook,
-                max_slippage=config.max_slippage,
-                max_workers=1,
-                polymarket_timeout=config.http_timeout,
-            )
-        except Exception as exc:
-            errors.append(
-                {
-                    "slug": getattr(candidate, "slug", "unknown"),
-                    "question": getattr(candidate, "question", ""),
-                    "reason": str(exc),
-                }
-            )
-            continue
-        opportunities.extend(result)
+
+    def evaluate_one(candidate: Any) -> list[Opportunity]:
+        return scout_candidates(
+            [candidate],
+            risk_config(config),
+            max_futures_margin=config.max_futures_margin,
+            use_live_orderbook=config.live_orderbook,
+            max_slippage=config.max_slippage,
+            max_workers=1,
+            polymarket_timeout=config.http_timeout,
+        )
+
+    workers = max(1, min(config.max_workers, len(candidates))) if candidates else 1
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_candidate = {executor.submit(evaluate_one, candidate): candidate for candidate in candidates}
+        for future in as_completed(future_to_candidate):
+            candidate = future_to_candidate[future]
+            try:
+                opportunities.extend(future.result())
+            except Exception as exc:
+                errors.append(
+                    {
+                        "slug": getattr(candidate, "slug", "unknown"),
+                        "question": getattr(candidate, "question", ""),
+                        "reason": str(exc),
+                    }
+                )
     return sorted(opportunities, key=lambda item: item.score, reverse=True), errors[:10]
 
 
@@ -440,7 +524,9 @@ def should_alert(opportunity: Opportunity, config: ScannerConfig) -> bool:
         return False
     if opportunity.edge.true_edge < config.min_edge:
         return False
-    if not opportunity.quality.ok:
+    if opportunity.quality.net_upside < config.min_net_upside:
+        return False
+    if opportunity.quality.reward_risk < config.min_reward_risk:
         return False
     if positive_result_probability(opportunity.edge, opportunity.costs) < config.min_positive_probability:
         return False
@@ -590,6 +676,7 @@ def run_scanner_loop(
 
     while stop_event is None or not stop_event.is_set():
         started_at = now_iso()
+        scan_started = time.perf_counter()
         state = load_state()
         try:
             opportunities, effective_config, diagnostics = evaluate_opportunities(config)
@@ -608,6 +695,7 @@ def run_scanner_loop(
                     bot.send_report(chat_id, TelegramResponse(text=review_text, html=True))
             if not dry_run:
                 save_state(state)
+            diagnostics.setdefault("timings", {})["scan_loop_seconds"] = elapsed_seconds(scan_started)
             write_scan_status(
                 config=effective_config,
                 started_at=started_at,

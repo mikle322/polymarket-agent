@@ -67,6 +67,7 @@ def render_scanner_status() -> str:
         lines.append(f"• Радар-кандидатів: <b>{radar.get('matched', 0)}</b>")
     lines.extend(render_diagnostics_block(diagnostics))
     lines.extend(render_prefilter_block(diagnostics))
+    lines.extend(render_timings_block(diagnostics))
 
     lines.extend(
         [
@@ -189,6 +190,24 @@ def render_prefilter_block(diagnostics: dict[str, Any]) -> list[str]:
         for item in examples[:3]:
             lines.append(f"  - <code>{esc(item.get('slug', 'unknown'))}</code>: {esc(item.get('reason', 'unknown'))}")
     return lines
+
+
+def render_timings_block(diagnostics: dict[str, Any]) -> list[str]:
+    timings = diagnostics.get("timings") or {}
+    if not timings:
+        return []
+
+    return [
+        "",
+        "⚡ <b>Швидкість scan</b>",
+        f"• Повний цикл: <b>{format_seconds(timings.get('scan_loop_seconds'))}</b>",
+        f"• API inputs разом: <b>{format_seconds(timings.get('market_inputs_total_seconds'))}</b>",
+        f"• Market data: <b>{format_seconds(timings.get('market_data_seconds'))}</b>",
+        f"• IV: <b>{format_seconds(timings.get('iv_seconds'))}</b>",
+        f"• Discovery: <b>{format_seconds(timings.get('discovery_seconds', timings.get('candidate_load_seconds')))}</b>",
+        f"• Hedge/orderbook аналіз: <b>{format_seconds(timings.get('hedge_analysis_seconds'))}</b>",
+        f"• Evaluate total: <b>{format_seconds(timings.get('evaluate_total_seconds'))}</b>",
+    ]
 
 
 def render_diagnostics_block(diagnostics: dict[str, Any]) -> list[str]:
@@ -371,5 +390,14 @@ def format_optional_hours(value: Any) -> str:
         return "n/a"
     try:
         return f"{float(value):.1f}h"
+    except (TypeError, ValueError):
+        return esc(value)
+
+
+def format_seconds(value: Any) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        return f"{float(value):.3f}s"
     except (TypeError, ValueError):
         return esc(value)
