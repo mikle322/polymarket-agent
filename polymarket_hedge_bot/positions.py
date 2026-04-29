@@ -9,6 +9,7 @@ from polymarket_hedge_bot.formatting import money
 
 
 WALLET_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
+ACTIVE_SIZE_THRESHOLD = 0.01
 
 
 def wallet_from_text(text: str) -> str | None:
@@ -78,9 +79,15 @@ def load_positions_with_proxy_fallback(
             continue
         seen.add(normalized)
         checked_wallets.append(candidate_wallet)
-        positions = connector.get_positions(candidate_wallet, limit=limit, size_threshold=0.0, sort_by="CURRENT")
-        if any(position.size > 0 for position in positions):
-            return positions, checked_wallets, proxy_wallet
+        positions = connector.get_positions(
+            candidate_wallet,
+            limit=limit,
+            size_threshold=ACTIVE_SIZE_THRESHOLD,
+            sort_by="CURRENT",
+        )
+        active_positions = only_active_positions(positions)
+        if active_positions:
+            return active_positions, checked_wallets, proxy_wallet
 
     return [], checked_wallets, proxy_wallet
 
@@ -92,7 +99,7 @@ def render_positions_card(
     checked_wallets: list[str] | None = None,
     proxy_wallet: str | None = None,
 ) -> str:
-    active = [position for position in positions if position.size > 0]
+    active = only_active_positions(positions)
     total_current = sum(position.current_value for position in active)
     total_initial = sum(position.initial_value for position in active)
     total_cash_pnl = sum(position.cash_pnl for position in active)
@@ -105,6 +112,7 @@ def render_positions_card(
         "━━━━━━━━━━━━━━━━",
         f"👛 Wallet: <code>{html.escape(short_wallet(wallet))}</code>",
         f"🔎 Checked: <code>{html.escape(', '.join(short_wallet(item) for item in (checked_wallets or [wallet])))}</code>",
+        "🎯 Режим: <b>тільки активні позиції</b>",
         f"📌 Активних позицій: <b>{len(active)}</b>",
         f"💵 Current value: <b>{money(total_current)}</b>",
         f"🧾 Cost basis: <b>{money(total_initial)}</b>",
@@ -142,6 +150,10 @@ def proxy_hint(proxy_wallet: str | None) -> str:
     if proxy_wallet:
         return f"Знайдений proxy wallet: <code>{html.escape(short_wallet(proxy_wallet))}</code>"
     return "Proxy wallet автоматично не знайдено для цієї адреси."
+
+
+def only_active_positions(positions: list[PolymarketPosition]) -> list[PolymarketPosition]:
+    return [position for position in positions if position.size > ACTIVE_SIZE_THRESHOLD]
 
 
 def render_position_lines(index: int, position: PolymarketPosition) -> list[str]:
