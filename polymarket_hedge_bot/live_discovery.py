@@ -52,6 +52,8 @@ class DiscoveryStats:
     active_orderbook: int = 0
     btc_related: int = 0
     touch_or_down_keyword: int = 0
+    filtered_non_calendar_deadline: int = 0
+    filtered_strike_distance: int = 0
     filtered_liquidity: int = 0
     missing_strike: int = 0
     missing_direction: int = 0
@@ -208,6 +210,12 @@ def market_to_candidate(
     if stats is not None:
         stats.touch_or_down_keyword += 1
 
+    if not has_calendar_deadline(text):
+        if stats is not None:
+            stats.filtered_non_calendar_deadline += 1
+            stats.add_failed_example(market, "unsupported event-based deadline; no clear calendar date in title")
+        return None
+
     if market.liquidity is not None and market.liquidity < min_liquidity:
         if stats is not None:
             stats.filtered_liquidity += 1
@@ -268,6 +276,15 @@ def market_to_candidate(
             stats.add_failed_example(enriched_market, ", ".join(missing_reasons))
         return None
 
+    if not strike_distance_ok(strike, direction, btc_price):
+        if stats is not None:
+            stats.filtered_strike_distance += 1
+            stats.add_failed_example(
+                enriched_market,
+                f"strike too far for model: strike={strike:.0f}, btc={btc_price:.0f}, direction={direction}",
+            )
+        return None
+
     if stats is not None:
         stats.parsed_before_dedupe += 1
 
@@ -307,6 +324,39 @@ def parse_strike(text: str) -> float | None:
         if 10_000 <= value <= 2_000_000:
             return value
     return None
+
+
+def has_calendar_deadline(text: str) -> bool:
+    calendar_patterns = (
+        r"\b20[2-4][0-9]\b",
+        r"\bjan(?:uary)?\b",
+        r"\bfeb(?:ruary)?\b",
+        r"\bmar(?:ch)?\b",
+        r"\bapr(?:il)?\b",
+        r"\bmay\b",
+        r"\bjun(?:e)?\b",
+        r"\bjul(?:y)?\b",
+        r"\baug(?:ust)?\b",
+        r"\bsep(?:t(?:ember)?)?\b",
+        r"\boct(?:ober)?\b",
+        r"\bnov(?:ember)?\b",
+        r"\bdec(?:ember)?\b",
+        r"\bq[1-4]\b",
+        r"\bend of\b",
+        r"\bthis (week|month|quarter|year)\b",
+    )
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in calendar_patterns)
+
+
+def strike_distance_ok(strike: float, direction: str, btc_price: float) -> bool:
+    if btc_price <= 0:
+        return False
+    ratio = strike / btc_price
+    if direction == "up":
+        return 1.01 <= ratio <= 3.0
+    if direction == "down":
+        return 0.33 <= ratio <= 0.99
+    return False
 
 
 def parse_direction(text: str) -> str | None:

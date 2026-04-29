@@ -121,6 +121,8 @@ def render_diagnostics_block(diagnostics: dict[str, Any]) -> list[str]:
         f"• Активні з orderbook: <b>{discovery.get('active_orderbook', 'n/a')}</b>",
         f"• BTC-related: <b>{discovery.get('btc_related', 'n/a')}</b>",
         f"• Touch/down keyword: <b>{discovery.get('touch_or_down_keyword', 'n/a')}</b>",
+        f"• Event-based без дати: <b>{discovery.get('filtered_non_calendar_deadline', 'n/a')}</b>",
+        f"• Strike занадто далеко: <b>{discovery.get('filtered_strike_distance', 'n/a')}</b>",
         f"• Відсіяла ліквідність: <b>{discovery.get('filtered_liquidity', 'n/a')}</b>",
         f"• Не розпарсились поля: <b>{missing_fields_total(discovery)}</b>",
         f"• Дозавантажено по slug: <b>{discovery.get('hydrated_by_slug', 'n/a')}</b>",
@@ -184,6 +186,10 @@ def zero_reason(diagnostics: dict[str, Any]) -> str:
         return "у переглянутих сторінках немає BTC-related ринків."
     if int_or_zero(discovery.get("touch_or_down_keyword")) == 0:
         return "BTC-ринки є, але їх назви не схожі на touch/down markets, які бот зараз вміє парсити."
+    if int_or_zero(discovery.get("filtered_non_calendar_deadline")) > 0 and int_or_zero(discovery.get("parsed_candidates")) == 0:
+        return "BTC-ринки є, але вони мають event-based дедлайн без чіткої календарної дати. Для нашої probability-моделі такі ринки поки небезпечні."
+    if int_or_zero(discovery.get("filtered_strike_distance")) > 0 and int_or_zero(discovery.get("parsed_candidates")) == 0:
+        return "BTC-ринки є, але strike занадто далеко від поточної ціни BTC, тому hedge/ймовірність стають ненадійними."
     if int_or_zero(discovery.get("filtered_liquidity")) > 0 and int_or_zero(discovery.get("parsed_candidates")) == 0:
         return "кандидати були, але їх відсік min-liquidity."
     if missing_fields_total(discovery) > 0 and int_or_zero(discovery.get("parsed_candidates")) == 0:
