@@ -178,18 +178,41 @@ def evaluate_opportunities(config: ScannerConfig) -> tuple[list[Opportunity], Sc
             "source": "candidate_file",
             "parsed_candidates": len(candidates),
         }
-    opportunities = scout_candidates(
+    opportunities, evaluation_errors = scout_candidates_safe(
         candidates,
-        risk_config(config),
-        max_futures_margin=config.max_futures_margin,
-        use_live_orderbook=config.live_orderbook,
-        max_slippage=config.max_slippage,
-        max_workers=config.max_workers,
-        polymarket_timeout=config.http_timeout,
+        config,
     )
     diagnostics["candidates_loaded"] = len(candidates)
     diagnostics["opportunities_analyzed"] = len(opportunities)
+    diagnostics["evaluation_errors"] = evaluation_errors
     return opportunities, config, diagnostics
+
+
+def scout_candidates_safe(candidates: list, config: ScannerConfig) -> tuple[list[Opportunity], list[dict[str, str]]]:
+    opportunities: list[Opportunity] = []
+    errors: list[dict[str, str]] = []
+    for candidate in candidates:
+        try:
+            result = scout_candidates(
+                [candidate],
+                risk_config(config),
+                max_futures_margin=config.max_futures_margin,
+                use_live_orderbook=config.live_orderbook,
+                max_slippage=config.max_slippage,
+                max_workers=1,
+                polymarket_timeout=config.http_timeout,
+            )
+        except Exception as exc:
+            errors.append(
+                {
+                    "slug": getattr(candidate, "slug", "unknown"),
+                    "question": getattr(candidate, "question", ""),
+                    "reason": str(exc),
+                }
+            )
+            continue
+        opportunities.extend(result)
+    return sorted(opportunities, key=lambda item: item.score, reverse=True), errors[:10]
 
 
 def with_live_binance_data(config: ScannerConfig) -> ScannerConfig:

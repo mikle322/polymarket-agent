@@ -103,6 +103,7 @@ def render_diagnostics_block(diagnostics: dict[str, Any]) -> list[str]:
             "• Джерело: <b>локальний файл кандидатів</b>",
             f"• Кандидатів у файлі: <b>{discovery.get('parsed_candidates', diagnostics.get('candidates_loaded', 'n/a'))}</b>",
             f"• Дійшли до аналізу: <b>{diagnostics.get('opportunities_analyzed', 'n/a')}</b>",
+            f"• Помилки hedge-аналізу: <b>{len(diagnostics.get('evaluation_errors') or [])}</b>",
             f"• Пройшли alert-фільтри: <b>{diagnostics.get('matched_alert_filters', 'n/a')}</b>",
             f"• Надіслано після cooldown: <b>{diagnostics.get('sent_after_cooldown', 'n/a')}</b>",
         ]
@@ -125,6 +126,7 @@ def render_diagnostics_block(diagnostics: dict[str, Any]) -> list[str]:
         f"• Дозавантажено по slug: <b>{discovery.get('hydrated_by_slug', 'n/a')}</b>",
         f"• Кандидатів після парсингу: <b>{discovery.get('parsed_candidates', diagnostics.get('candidates_loaded', 'n/a'))}</b>",
         f"• Дійшли до аналізу: <b>{diagnostics.get('opportunities_analyzed', 'n/a')}</b>",
+        f"• Помилки hedge-аналізу: <b>{len(diagnostics.get('evaluation_errors') or [])}</b>",
         f"• Пройшли alert-фільтри: <b>{diagnostics.get('matched_alert_filters', 'n/a')}</b>",
     ]
 
@@ -143,6 +145,11 @@ def render_diagnostics_block(diagnostics: dict[str, Any]) -> list[str]:
         lines.extend(["", "⚠️ <b>API помилки</b>"])
         for error in error_examples[:3]:
             lines.append(f"• {esc(error)}")
+    evaluation_errors = diagnostics.get("evaluation_errors") or []
+    if evaluation_errors:
+        lines.extend(["", "⚠️ <b>Hedge-аналіз не пройшли</b>"])
+        for item in evaluation_errors[:4]:
+            lines.append(f"• <code>{esc(item.get('slug', 'unknown'))}</code>: {esc(item.get('reason', 'unknown'))}")
 
     return lines
 
@@ -182,6 +189,8 @@ def zero_reason(diagnostics: dict[str, Any]) -> str:
     if missing_fields_total(discovery) > 0 and int_or_zero(discovery.get("parsed_candidates")) == 0:
         return "BTC-ринки є, але бот не зміг витягнути strike, direction, deadline або NO price."
     if int_or_zero(diagnostics.get("opportunities_analyzed")) == 0:
+        if diagnostics.get("evaluation_errors"):
+            return "кандидати знайшлись, але hedge-аналіз відхилив їх: strike занадто близько, вже перетнутий або вхідні дані некоректні."
         return "кандидати знайшлись, але не дійшли до повного hedge-аналізу."
     if int_or_zero(diagnostics.get("matched_alert_filters")) == 0:
         return "угоди є, але не проходять наші фільтри якості, edge, ліквідності або ризику."
