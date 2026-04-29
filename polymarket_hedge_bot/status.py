@@ -61,6 +61,7 @@ def render_scanner_status() -> str:
 
     diagnostics = status.get("diagnostics") or {}
     lines.extend(render_diagnostics_block(diagnostics))
+    lines.extend(render_prefilter_block(diagnostics))
 
     lines.extend(
         [
@@ -75,6 +76,8 @@ def render_scanner_status() -> str:
             f"• Min score: <b>{status.get('min_score', 'n/a')}</b>",
             f"• Min edge: <b>{format_optional_percent(status.get('min_edge'))}</b>",
             f"• Min NO wins: <b>{format_optional_percent(status.get('min_positive_probability'))}</b>",
+            f"• Min time to deadline: <b>{format_optional_hours(status.get('min_hours_to_deadline'))}</b>",
+            f"• NO price range: <b>{format_optional_price(status.get('min_no_price'))} - {format_optional_price(status.get('max_no_price'))}</b>",
             f"• Min net upside: <b>${float(status.get('min_net_upside', 0.0)):.2f}</b>",
             f"• Min reward/risk: <b>{status.get('min_reward_risk', 'n/a')}</b>",
         ]
@@ -85,6 +88,27 @@ def render_scanner_status() -> str:
         lines.extend(["", "⚠️ <b>Остання помилка</b>", esc(error)])
 
     return "\n".join(lines)
+
+
+def render_prefilter_block(diagnostics: dict[str, Any]) -> list[str]:
+    prefilter = diagnostics.get("prefilter") or {}
+    if not prefilter:
+        return []
+
+    lines = [
+        "",
+        "🧹 <b>Pre-filter якості</b>",
+        f"• До pre-filter: <b>{diagnostics.get('candidates_loaded', 'n/a')}</b>",
+        f"• Після pre-filter: <b>{diagnostics.get('candidates_after_prefilter', 'n/a')}</b>",
+        f"• Відсіяно по дедлайну: <b>{prefilter.get('deadline_filtered', 0)}</b>",
+        f"• Відсіяно по NO price: <b>{prefilter.get('no_price_filtered', 0)}</b>",
+    ]
+    examples = prefilter.get("examples") or []
+    if examples:
+        lines.append("• Приклади:")
+        for item in examples[:3]:
+            lines.append(f"  - <code>{esc(item.get('slug', 'unknown'))}</code>: {esc(item.get('reason', 'unknown'))}")
+    return lines
 
 
 def render_diagnostics_block(diagnostics: dict[str, Any]) -> list[str]:
@@ -169,6 +193,19 @@ def missing_fields_total(discovery: dict[str, Any]) -> int:
 
 def zero_reason(diagnostics: dict[str, Any]) -> str:
     discovery = diagnostics.get("discovery") or {}
+    prefilter = diagnostics.get("prefilter") or {}
+    if int_or_zero(diagnostics.get("candidates_loaded")) > 0 and int_or_zero(
+        diagnostics.get("candidates_after_prefilter")
+    ) == 0:
+        deadline_filtered = int_or_zero(prefilter.get("deadline_filtered"))
+        no_price_filtered = int_or_zero(prefilter.get("no_price_filtered"))
+        if deadline_filtered and no_price_filtered:
+            return "кандидати були, але pre-filter відсіяв їх через близький дедлайн або нездорову ціну NO."
+        if deadline_filtered:
+            return "кандидати були, але всі надто близько до дедлайну для нормального хеджу."
+        if no_price_filtered:
+            return "кандидати були, але ціна NO поза дозволеним діапазоном."
+
     if "source" in discovery and discovery.get("source") == "candidate_file":
         if int_or_zero(diagnostics.get("opportunities_analyzed")) == 0:
             return "у файлі кандидатів немає ринків для аналізу."
@@ -236,5 +273,23 @@ def format_optional_percent(value: Any) -> str:
         return "auto / n/a"
     try:
         return f"{float(value) * 100:.2f}%"
+    except (TypeError, ValueError):
+        return esc(value)
+
+
+def format_optional_price(value: Any) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        return f"{float(value):.3f}"
+    except (TypeError, ValueError):
+        return esc(value)
+
+
+def format_optional_hours(value: Any) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        return f"{float(value):.1f}h"
     except (TypeError, ValueError):
         return esc(value)

@@ -5,6 +5,7 @@ import os
 import threading
 import time
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -48,6 +49,9 @@ class ScannerConfig:
     min_score: float
     min_edge: float
     min_positive_probability: float
+    min_hours_to_deadline: float
+    min_no_price: float
+    max_no_price: float
     cooldown_seconds: int
     live_orderbook: bool
     max_slippage: float
@@ -83,6 +87,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-score", type=float, default=60.0)
     parser.add_argument("--min-edge", type=float, default=0.10)
     parser.add_argument("--min-positive-probability", type=float, default=0.60)
+    parser.add_argument("--min-hours-to-deadline", type=float, default=6.0)
+    parser.add_argument("--min-no-price", type=float, default=0.05)
+    parser.add_argument("--max-no-price", type=float, default=0.90)
     parser.add_argument("--cooldown-min", type=float, default=30.0)
     parser.add_argument("--live-orderbook", action="store_true")
     parser.add_argument("--max-slippage", type=float, default=0.03)
@@ -120,6 +127,9 @@ def config_from_args(args: argparse.Namespace) -> ScannerConfig:
         min_score=args.min_score,
         min_edge=args.min_edge,
         min_positive_probability=args.min_positive_probability,
+        min_hours_to_deadline=args.min_hours_to_deadline,
+        min_no_price=args.min_no_price,
+        max_no_price=args.max_no_price,
         cooldown_seconds=int(args.cooldown_min * 60),
         live_orderbook=args.live_orderbook,
         max_slippage=args.max_slippage,
@@ -178,14 +188,65 @@ def evaluate_opportunities(config: ScannerConfig) -> tuple[list[Opportunity], Sc
             "source": "candidate_file",
             "parsed_candidates": len(candidates),
         }
+    candidates_loaded = len(candidates)
+    candidates, prefilter_stats = prefilter_candidates(candidates, config)
     opportunities, evaluation_errors = scout_candidates_safe(
         candidates,
         config,
     )
-    diagnostics["candidates_loaded"] = len(candidates)
+    diagnostics["candidates_loaded"] = candidates_loaded
+    diagnostics["prefilter"] = prefilter_stats
+    diagnostics["candidates_after_prefilter"] = len(candidates)
     diagnostics["opportunities_analyzed"] = len(opportunities)
     diagnostics["evaluation_errors"] = evaluation_errors
     return opportunities, config, diagnostics
+
+
+def prefilter_candidates(candidates: list[Any], config: ScannerConfig) -> tuple[list[Any], dict[str, Any]]:
+    now = datetime.now(timezone.utc)
+    kept: list[Any] = []
+    deadline_filtered = 0
+    no_price_filtered = 0
+    examples: list[dict[str, str]] = []
+
+    for candidate in candidates:
+        hours_to_deadline = (candidate.deadline - now).total_seconds() / 3600
+        if hours_to_deadline < config.min_hours_to_deadline:
+            deadline_filtered += 1
+            add_prefilter_example(
+                examples,
+                candidate,
+                f"дедлайн надто близько: {hours_to_deadline:.1f}h < {config.min_hours_to_deadline:.1f}h",
+            )
+            continue
+
+        if candidate.no_price < config.min_no_price or candidate.no_price > config.max_no_price:
+            no_price_filtered += 1
+            add_prefilter_example(
+                examples,
+                candidate,
+                f"NO price поза діапазоном: {candidate.no_price:.3f}, потрібно {config.min_no_price:.3f}-{config.max_no_price:.3f}",
+            )
+            continue
+
+        kept.append(candidate)
+
+    return kept, {
+        "deadline_filtered": deadline_filtered,
+        "no_price_filtered": no_price_filtered,
+        "examples": examples[:6],
+    }
+
+
+def add_prefilter_example(examples: list[dict[str, str]], candidate: Any, reason: str) -> None:
+    if len(examples) >= 6:
+        return
+    examples.append(
+        {
+            "slug": str(getattr(candidate, "slug", "unknown")),
+            "reason": reason,
+        }
+    )
 
 
 def scout_candidates_safe(candidates: list, config: ScannerConfig) -> tuple[list[Opportunity], list[dict[str, str]]]:
@@ -409,7 +470,14 @@ def run_scanner_loop(
     safe_print("24/7 scanner started")
     safe_print(f"Source: {'live Polymarket' if config.live_polymarket else config.candidates}")
     safe_print(f"Interval: {config.interval_seconds}s")
-    safe_print(f"Filters: min_decision={config.min_decision}, min_score={config.min_score}, min_edge={config.min_edge}")
+    safe_print(
+        "Filters: "
+        f"min_decision={config.min_decision}, "
+        f"min_score={config.min_score}, "
+        f"min_edge={config.min_edge}, "
+        f"min_hours_to_deadline={config.min_hours_to_deadline}, "
+        f"no_price={config.min_no_price}-{config.max_no_price}"
+    )
 
     while stop_event is None or not stop_event.is_set():
         started_at = now_iso()
@@ -495,6 +563,9 @@ def write_scan_status(
             "min_score": config.min_score,
             "min_edge": config.min_edge,
             "min_positive_probability": config.min_positive_probability,
+            "min_hours_to_deadline": config.min_hours_to_deadline,
+            "min_no_price": config.min_no_price,
+            "max_no_price": config.max_no_price,
             "min_net_upside": config.min_net_upside,
             "min_reward_risk": config.min_reward_risk,
             "live_orderbook": config.live_orderbook,

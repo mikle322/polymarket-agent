@@ -156,10 +156,13 @@ python -m polymarket_hedge_bot.scanner `
   --min-score 60 `
   --min-edge 0.10 `
   --min-positive-probability 0.60 `
+  --min-hours-to-deadline 6 `
+  --min-no-price 0.05 `
+  --max-no-price 0.90 `
   --cooldown-min 30
 ```
 
-The scanner sends only filtered opportunities and avoids duplicate alerts during the cooldown window.
+The scanner sends only filtered opportunities and avoids duplicate alerts during the cooldown window. The deadline and NO-price pre-filters remove noisy late-stage markets before hedge analysis, so skipped opportunities stay cleaner too.
 
 ### Faster market data mode
 
@@ -169,6 +172,8 @@ For quicker discovery, the scanner now fetches Polymarket pages and CLOB orderbo
 --interval       how often the scanner runs, default 60s
 --http-timeout   timeout for each public API request, default 5s
 --max-workers    parallel workers for Polymarket pages/orderbooks, default 8
+--min-hours-to-deadline  ignore markets too close to resolution, default 6h
+--min-no-price / --max-no-price  keep NO price in a sane range, default 0.05-0.90
 ```
 
 Recommended VPS fast mode:
@@ -183,7 +188,10 @@ Recommended VPS fast mode:
   --live-orderbook \
   --interval 15 \
   --http-timeout 4 \
-  --max-workers 10
+  --max-workers 10 \
+  --min-hours-to-deadline 6 \
+  --min-no-price 0.05 \
+  --max-no-price 0.90
 ```
 
 This is still polling. The lowest-latency upgrade is WebSocket streaming:

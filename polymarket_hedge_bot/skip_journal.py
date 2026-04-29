@@ -139,6 +139,17 @@ def save_skips(records: list[SkipRecord]) -> None:
             handle.write(json.dumps(asdict(record), ensure_ascii=False) + "\n")
 
 
+def latest_unique_by_slug(records: list[SkipRecord]) -> list[SkipRecord]:
+    seen: set[str] = set()
+    unique: list[SkipRecord] = []
+    for record in reversed(records):
+        if record.slug in seen:
+            continue
+        seen.add(record.slug)
+        unique.append(record)
+    return unique
+
+
 def render_last_skips(limit: int = 10) -> str:
     records = load_skips()
     if not records:
@@ -373,11 +384,12 @@ def render_last_skips(limit: int = 10) -> str:
             "Поки немає записів. Коли scanner пропустить кандидата, бот збере його тут для подальшого аналізу."
         )
 
-    shown = records[-limit:][::-1]
+    unique_records = latest_unique_by_slug(records)
+    shown = unique_records[:limit]
     lines = [
         "🧩 <b>Останні пропущені угоди</b>",
         "━━━━━━━━━━━━━━━━",
-        f"Показую: <b>{len(shown)}</b> з <b>{len(records)}</b>",
+        f"Показую: <b>{len(shown)}</b> унікальних з <b>{len(records)}</b> записів",
         "",
     ]
     for index, record in enumerate(shown, start=1):
@@ -406,7 +418,8 @@ def render_skips_bucket(bucket: str, limit: int = 10) -> str:
         "pending": ("⏳", "Ще не закрились"),
     }
     icon, title = labels.get(bucket, ("🧩", bucket.upper()))
-    records = [record for record in load_skips() if skip_bucket(record) == bucket]
+    raw_records = [record for record in load_skips() if skip_bucket(record) == bucket]
+    records = latest_unique_by_slug(raw_records)
     if not records:
         return (
             f"{icon} <b>Пропущені угоди: {title}</b>\n"
@@ -414,11 +427,11 @@ def render_skips_bucket(bucket: str, limit: int = 10) -> str:
             "Поки немає записів у цій категорії."
         )
 
-    shown = records[-limit:][::-1]
+    shown = records[:limit]
     lines = [
         f"{icon} <b>Пропущені угоди: {title}</b>",
         "━━━━━━━━━━━━━━━━",
-        f"Знайдено: <b>{len(records)}</b> | Показую: <b>{len(shown)}</b>",
+        f"Знайдено: <b>{len(records)}</b> унікальних | Показую: <b>{len(shown)}</b>",
         "",
     ]
     for index, record in enumerate(shown, start=1):
