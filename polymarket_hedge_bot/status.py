@@ -164,6 +164,68 @@ def render_radar_status() -> str:
     return "\n".join(lines)
 
 
+def render_why_no_signals() -> str:
+    status = load_scanner_status()
+    if status is None:
+        return (
+            "🟡 <b>Чому немає сигналів</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "Scanner ще не записав жодного статусу. Зачекай перший scan або перевір, чи сервіс запущений."
+        )
+
+    diagnostics = status.get("diagnostics") or {}
+    prefilter = diagnostics.get("prefilter") or {}
+    radar = diagnostics.get("radar") or {}
+    rejected_by = radar.get("rejected_by") or {}
+    reason = zero_reason(diagnostics)
+
+    lines = [
+        "🟡 <b>Чому немає сигналів</b>",
+        "━━━━━━━━━━━━━━━━",
+        "",
+        f"• Останній scan: <b>{short_time(status.get('finished_at'))}</b>",
+        f"• Джерело: <b>{esc(status.get('source', 'n/a'))}</b>",
+        f"• Кандидатів знайдено: <b>{diagnostics.get('candidates_loaded', 'n/a')}</b>",
+        f"• Після pre-filter: <b>{diagnostics.get('candidates_after_prefilter', 'n/a')}</b>",
+        f"• Проаналізовано: <b>{diagnostics.get('opportunities_analyzed', status.get('scanned', 'n/a'))}</b>",
+        f"• Пройшли alert-фільтри: <b>{status.get('matched', 'n/a')}</b>",
+        "",
+        f"💡 <b>Головна причина:</b> {esc(reason or 'угоди є, але зараз не проходять фільтри якості.')}",
+    ]
+
+    if prefilter:
+        lines.extend(
+            [
+                "",
+                "<b>Pre-filter</b>",
+                f"• Дедлайн: <b>{prefilter.get('deadline_filtered', 0)}</b>",
+                f"  - надто близько: <b>{prefilter.get('deadline_too_close_filtered', 0)}</b>",
+                f"  - надто далеко: <b>{prefilter.get('deadline_too_far_filtered', 0)}</b>",
+                f"• NO price: <b>{prefilter.get('no_price_filtered', 0)}</b>",
+            ]
+        )
+
+    if rejected_by:
+        lines.extend(["", "<b>Radar відсіяв</b>"])
+        for key, value in rejected_by.items():
+            if value:
+                lines.append(f"• {esc(key)}: <b>{value}</b>")
+
+    lines.extend(
+        [
+            "",
+            "<b>Поточні пороги</b>",
+            f"• Min score: <b>{status.get('min_score', 'n/a')}</b>",
+            f"• Min edge: <b>{format_optional_percent(status.get('min_edge'))}</b>",
+            f"• Min net upside: <b>{money(float(status.get('min_net_upside', 0.0)))}</b>",
+            f"• Min reward/risk: <b>{status.get('min_reward_risk', 'n/a')}</b>",
+            "",
+            "Детальніше: /status або /radar",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def render_radar_rejection_lines(radar: dict[str, Any]) -> list[str]:
     rejected_by = radar.get("rejected_by") or {}
     if not rejected_by:
@@ -288,6 +350,10 @@ def render_diagnostics_block(diagnostics: dict[str, Any]) -> list[str]:
         f"• Активні з orderbook: <b>{discovery.get('active_orderbook', 'n/a')}</b>",
         f"• BTC-related: <b>{discovery.get('btc_related', 'n/a')}</b>",
         f"• Touch/down keyword: <b>{discovery.get('touch_or_down_keyword', 'n/a')}</b>",
+        f"• Touch markets: <b>{discovery.get('touch_markets', 'n/a')}</b>",
+        f"• Settlement markets: <b>{discovery.get('settlement_markets', 'n/a')}</b>",
+        f"• Up/down markets: <b>{discovery.get('up_down_markets', 'n/a')}</b>",
+        f"• Unsupported type: <b>{discovery.get('unsupported_market_type', 'n/a')}</b>",
         f"• Event-based без дати: <b>{discovery.get('filtered_non_calendar_deadline', 'n/a')}</b>",
         f"• Strike занадто далеко: <b>{discovery.get('filtered_strike_distance', 'n/a')}</b>",
         f"• Відсіяла ліквідність: <b>{discovery.get('filtered_liquidity', 'n/a')}</b>",

@@ -30,6 +30,7 @@ class CandidateMarket:
     spread: float | None = None
     liquidity: float | None = None
     no_token_id: str | None = None
+    market_type: str = "touch"
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,7 @@ def _candidate_from_dict(item: dict[str, Any], default_stake: float | None) -> C
         spread=_optional_float(item.get("spread")),
         liquidity=_optional_float(item.get("liquidity")),
         no_token_id=item.get("no_token_id"),
+        market_type=str(item.get("market_type", "touch")),
     )
 
 

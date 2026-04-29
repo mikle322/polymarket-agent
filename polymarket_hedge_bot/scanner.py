@@ -19,6 +19,7 @@ from polymarket_hedge_bot.connectors.okx_futures import OkxFuturesConnector
 from polymarket_hedge_bot.formatting import money, positive_result_probability, ua_reason
 from polymarket_hedge_bot.journal import create_signal
 from polymarket_hedge_bot.live_discovery import discover_polymarket_btc_candidates_with_stats
+from polymarket_hedge_bot.opportunity_history import record_opportunity_history
 from polymarket_hedge_bot.scout import Opportunity, load_candidates, scout_candidates
 from polymarket_hedge_bot.skip_journal import opportunity_key, record_skips, render_review_summary, review_due_skips
 from polymarket_hedge_bot.status import format_optional_percent, now_iso, write_scanner_status, zero_reason
@@ -931,6 +932,8 @@ def run_scanner_loop(
             diagnostics["matched_alert_filters"] = len(matched)
             diagnostics["sent_after_cooldown"] = sent
             diagnostics["skipped_logged"] = skipped_logged
+            history_logged = record_opportunity_history(opportunities, matched_keys, diagnostics)
+            diagnostics["opportunity_history_logged"] = history_logged
             heartbeat_sent = send_no_signal_heartbeat(
                 opportunities,
                 matched,

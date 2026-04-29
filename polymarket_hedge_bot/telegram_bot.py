@@ -24,7 +24,7 @@ from polymarket_hedge_bot.probability import touch_probability, years_until
 from polymarket_hedge_bot.quality import calculate_quality
 from polymarket_hedge_bot.scout import load_candidates, scout_candidates
 from polymarket_hedge_bot.skip_journal import render_last_skips, render_skips_bucket, review_skips
-from polymarket_hedge_bot.status import render_radar_status, render_scanner_status
+from polymarket_hedge_bot.status import render_radar_status, render_scanner_status, render_why_no_signals
 from polymarket_hedge_bot.telegram_views import render_analyze_card, render_scout_cards
 from polymarket_hedge_bot.utils import load_dotenv, safe_print
 
@@ -657,6 +657,7 @@ def scanner_menu_keyboard() -> dict[str, Any]:
     return {
         "inline_keyboard": [
             [{"text": "📡 Статус scanner", "callback_data": "menu:scanner_status"}],
+            [{"text": "🟡 Чому немає сигналів", "callback_data": "menu:scanner_why"}],
             [{"text": "🔭 Радар угод", "callback_data": "menu:scanner_radar"}],
             [{"text": "🧩 Пропущені угоди", "callback_data": "menu:skips"}],
             [{"text": "⬅️ Назад", "callback_data": "menu:main"}],
@@ -722,6 +723,8 @@ def handle_text_command(text: str) -> TelegramResponse:
         return TelegramResponse(render_scanner_status(), reply_markup=bot_menu_keyboard(), html=True)
     if text == "/radar":
         return TelegramResponse(render_radar_status(), reply_markup=scanner_menu_keyboard(), html=True)
+    if text in {"/why_no_signals", "/why"}:
+        return TelegramResponse(render_why_no_signals(), reply_markup=scanner_menu_keyboard(), html=True)
     if text == "/last_skips":
         return TelegramResponse(render_last_skips(), reply_markup=skips_menu_keyboard(), html=True)
     if text == "/review_skips":
@@ -804,6 +807,8 @@ def handle_menu_callback(data: str) -> TelegramResponse:
         return TelegramResponse(render_scanner_status(), reply_markup=scanner_menu_keyboard(), html=True)
     if action == "scanner_radar":
         return TelegramResponse(render_radar_status(), reply_markup=scanner_menu_keyboard(), html=True)
+    if action == "scanner_why":
+        return TelegramResponse(render_why_no_signals(), reply_markup=scanner_menu_keyboard(), html=True)
     if action == "skips":
         return TelegramResponse(
             "🧩 <b>Пропущені угоди</b>\n"

@@ -35,6 +35,7 @@ DOWN_WORDS = (
     "lower",
     "low",
     "drop",
+    "dip",
     "fall",
     "go below",
     "trade below",
@@ -53,6 +54,10 @@ class DiscoveryStats:
     active_orderbook: int = 0
     btc_related: int = 0
     touch_or_down_keyword: int = 0
+    touch_markets: int = 0
+    settlement_markets: int = 0
+    up_down_markets: int = 0
+    unsupported_market_type: int = 0
     filtered_non_calendar_deadline: int = 0
     filtered_strike_distance: int = 0
     filtered_liquidity: int = 0
@@ -252,8 +257,23 @@ def market_to_candidate(
     if stats is not None:
         stats.btc_related += 1
 
-    if not any(word in text for word in TOUCH_WORDS + DOWN_WORDS):
+    market_type = classify_market_type(text)
+    if market_type == "touch":
+        if stats is not None:
+            stats.touch_markets += 1
+    elif market_type == "settlement":
+        if stats is not None:
+            stats.settlement_markets += 1
+            stats.add_failed_example(market, "settlement-at-deadline market; touch model disabled")
+        return None
+    elif market_type == "up_down":
+        if stats is not None:
+            stats.up_down_markets += 1
+            stats.add_failed_example(market, "up/down interval market; touch model disabled")
+        return None
+    else:
         if stats is not None and any(word in text for word in BTC_WORDS):
+            stats.unsupported_market_type += 1
             stats.add_failed_example(market, "BTC market, but no touch/down keyword")
         return None
     if stats is not None:
@@ -349,7 +369,41 @@ def market_to_candidate(
         stake=stake,
         liquidity=enriched_market.liquidity,
         no_token_id=no_token_id,
+        market_type=market_type,
     )
+
+
+def classify_market_type(text: str) -> str:
+    normalized = " ".join(text.lower().split())
+    if re.search(r"\b(up or down|higher or lower)\b", normalized):
+        return "up_down"
+    if re.search(r"\b(15m|15 m|hour|hourly)\b", normalized) and re.search(r"\b(up|down)\b", normalized):
+        return "up_down"
+    if is_settlement_market(normalized):
+        return "settlement"
+    if is_touch_market(normalized):
+        return "touch"
+    return "unsupported"
+
+
+def is_settlement_market(text: str) -> bool:
+    settlement_patterns = (
+        r"\bwill the price of bitcoin be (above|below|under|over)\b",
+        r"\bwill bitcoin be (above|below|under|over)\b",
+        r"\b(bitcoin|btc) (above|below|under|over) \$?[0-9,.]+[kKmM]?\b",
+        r"\b(close|finish|end|settle|settles|be) (above|below|under|over)\b",
+    )
+    return any(re.search(pattern, text) for pattern in settlement_patterns)
+
+
+def is_touch_market(text: str) -> bool:
+    touch_patterns = (
+        r"\b(reach|hit|touch|exceed|break|cross)\b",
+        r"\btrade (above|below|under|over)\b",
+        r"\b(at or above|at or below|at least|or more|or less)\b",
+        r"\b(dip|drop|fall|rise|go) (to|below|above|under|over)\b",
+    )
+    return any(re.search(pattern, text) for pattern in touch_patterns)
 
 
 def parse_strike(text: str) -> float | None:
