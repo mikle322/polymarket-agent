@@ -20,6 +20,7 @@ from polymarket_hedge_bot.formatting import money, positive_result_probability, 
 from polymarket_hedge_bot.journal import create_signal
 from polymarket_hedge_bot.live_discovery import discover_polymarket_btc_candidates_with_stats
 from polymarket_hedge_bot.opportunity_history import record_opportunity_history
+from polymarket_hedge_bot.paper_trading import record_paper_trades, render_paper_review_summary, review_due_paper_trades
 from polymarket_hedge_bot.scout import Opportunity, load_candidates, scout_candidates
 from polymarket_hedge_bot.skip_journal import opportunity_key, record_skips, render_review_summary, review_due_skips
 from polymarket_hedge_bot.status import format_optional_percent, now_iso, write_scanner_status, zero_reason
@@ -934,6 +935,8 @@ def run_scanner_loop(
             diagnostics["skipped_logged"] = skipped_logged
             history_logged = record_opportunity_history(opportunities, matched_keys, diagnostics)
             diagnostics["opportunity_history_logged"] = history_logged
+            paper_logged = record_paper_trades(matched) if not dry_run else 0
+            diagnostics["paper_trades_logged"] = paper_logged
             heartbeat_sent = send_no_signal_heartbeat(
                 opportunities,
                 matched,
@@ -951,6 +954,12 @@ def run_scanner_loop(
                 safe_print(review_text)
                 if bot is not None and chat_id is not None:
                     bot.send_report(chat_id, TelegramResponse(text=review_text, html=True))
+            paper_review = review_due_paper_trades(limit=10) if not dry_run else None
+            if paper_review is not None and paper_review.reviewed > 0:
+                paper_review_text = render_paper_review_summary(paper_review)
+                safe_print(paper_review_text)
+                if bot is not None and chat_id is not None:
+                    bot.send_report(chat_id, TelegramResponse(text=paper_review_text, html=True))
             if not dry_run:
                 cleaned = cleanup_state(state)
                 if cleaned:
