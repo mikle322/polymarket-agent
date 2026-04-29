@@ -1,0 +1,159 @@
+import html
+import os
+import re
+from datetime import datetime, timezone
+from urllib.error import HTTPError, URLError
+
+from polymarket_hedge_bot.connectors.polymarket_data import PolymarketDataConnector, PolymarketPosition
+from polymarket_hedge_bot.formatting import money
+
+
+WALLET_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
+
+
+def wallet_from_text(text: str) -> str | None:
+    parts = text.strip().split()
+    if len(parts) >= 2:
+        return parts[1]
+    return os.environ.get("POLYMARKET_WALLET_ADDRESS") or os.environ.get("POLYMARKET_PROXY_WALLET")
+
+
+def render_wallet_positions(wallet: str | None = None, limit: int = 12, timeout: float = 8.0) -> str:
+    wallet = wallet or os.environ.get("POLYMARKET_WALLET_ADDRESS") or os.environ.get("POLYMARKET_PROXY_WALLET")
+    if not wallet:
+        return (
+            "💼 <b>Мої позиції Polymarket</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "Потрібна тільки публічна адреса wallet/proxy wallet. Приватний ключ не потрібен.\n\n"
+            "Додай у <code>.env</code>:\n"
+            "<code>POLYMARKET_WALLET_ADDRESS=0x...</code>\n\n"
+            "Або відкрий разово так:\n"
+            "<code>/positions 0x...</code>"
+        )
+
+    if not WALLET_RE.match(wallet):
+        return (
+            "⚠️ <b>Некоректна адреса</b>\n\n"
+            "Адреса має виглядати як <code>0x</code> + 40 hex символів.\n"
+            "Приклад: <code>/positions 0x1234...</code>"
+        )
+
+    connector = PolymarketDataConnector(timeout=timeout)
+    try:
+        positions = connector.get_positions(wallet, limit=limit, size_threshold=0.0, sort_by="CURRENT")
+    except (HTTPError, URLError, TimeoutError, OSError, ValueError) as exc:
+        return (
+            "⚠️ <b>Не вдалося отримати позиції Polymarket</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            f"Wallet: <code>{html.escape(short_wallet(wallet))}</code>\n"
+            f"Причина: <code>{html.escape(str(exc))}</code>\n\n"
+            "Це read-only запит до <code>data-api.polymarket.com/positions</code>. "
+            "На VPS має працювати, якщо сервер має доступ до інтернету."
+        )
+    return render_positions_card(wallet, positions, limit=limit)
+
+
+def render_positions_card(wallet: str, positions: list[PolymarketPosition], limit: int = 12) -> str:
+    active = [position for position in positions if position.size > 0]
+    total_current = sum(position.current_value for position in active)
+    total_initial = sum(position.initial_value for position in active)
+    total_cash_pnl = sum(position.cash_pnl for position in active)
+    total_realized = sum(position.realized_pnl for position in active)
+    positive = sum(1 for position in active if position.cash_pnl > 0)
+    negative = sum(1 for position in active if position.cash_pnl < 0)
+
+    lines = [
+        "💼 <b>Мої позиції Polymarket</b>",
+        "━━━━━━━━━━━━━━━━",
+        f"👛 Wallet: <code>{html.escape(short_wallet(wallet))}</code>",
+        f"📌 Активних позицій: <b>{len(active)}</b>",
+        f"💵 Current value: <b>{money(total_current)}</b>",
+        f"🧾 Cost basis: <b>{money(total_initial)}</b>",
+        f"{pnl_emoji(total_cash_pnl)} Cash PnL: <b>{money(total_cash_pnl)}</b>",
+        f"✅ Realized PnL: <b>{money(total_realized)}</b>",
+        f"🟢 / 🔴 Плюс-мінус: <b>{positive}</b> / <b>{negative}</b>",
+    ]
+
+    if not active:
+        lines.extend(
+            [
+                "",
+                "Позицій не знайдено. Якщо ти точно маєш угоди, перевір, що вказана саме proxy wallet адреса Polymarket.",
+            ]
+        )
+        return "\n".join(lines)
+
+    lines.extend(["", f"📊 <b>Топ {min(limit, len(active))} позицій</b>"])
+    for index, position in enumerate(active[:limit], start=1):
+        lines.extend(render_position_lines(index, position))
+
+    lines.extend(
+        [
+            "",
+            "ℹ️ Це read-only перегляд через публічний Polymarket Data API. Для цього не потрібен private key.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def render_position_lines(index: int, position: PolymarketPosition) -> list[str]:
+    status = position_status(position)
+    pnl = position.cash_pnl
+    return [
+        "",
+        f"{index}. {pnl_emoji(pnl)} <b>{html.escape(position.outcome or 'Outcome')}</b> | {status}",
+        f"<code>{html.escape(position.slug or position.condition_id[:12])}</code>",
+        f"• Ринок: {html.escape(trim(position.title, 90))}",
+        f"• Tokens: <b>{position.size:.2f}</b> | Avg: <b>{position.avg_price:.3f}</b> | Now: <b>{position.cur_price:.3f}</b>",
+        f"• Value: <b>{money(position.current_value)}</b> | Cost: <b>{money(position.initial_value)}</b>",
+        f"• PnL: <b>{money(position.cash_pnl)}</b> | <b>{position.percent_pnl:.1f}%</b>",
+        f"• Дедлайн: <code>{html.escape(short_date(position.end_date))}</code>",
+    ]
+
+
+def position_status(position: PolymarketPosition) -> str:
+    if position.redeemable:
+        return "🎁 <b>redeemable</b>"
+    if position.mergeable:
+        return "🔀 <b>mergeable</b>"
+    end = parse_date(position.end_date)
+    if end is not None and end <= datetime.now(timezone.utc):
+        return "⏳ <b>після дедлайну</b>"
+    return "🟢 <b>активна</b>"
+
+
+def parse_date(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def short_date(value: str | None) -> str:
+    parsed = parse_date(value)
+    if parsed is None:
+        return "n/a"
+    return parsed.strftime("%Y-%m-%d %H:%M UTC")
+
+
+def short_wallet(wallet: str) -> str:
+    return f"{wallet[:6]}...{wallet[-4:]}" if len(wallet) > 12 else wallet
+
+
+def trim(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    return value[: limit - 1].rstrip() + "…"
+
+
+def pnl_emoji(value: float) -> str:
+    if value > 0:
+        return "🟢"
+    if value < 0:
+        return "🔴"
+    return "⚪"

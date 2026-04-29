@@ -42,6 +42,7 @@ Set:
 ```text
 TELEGRAM_BOT_TOKEN=your_bot_token_here
 TELEGRAM_ALLOWED_CHAT_ID=
+POLYMARKET_WALLET_ADDRESS=0x_your_public_wallet_or_proxy_wallet
 ```
 
 `TELEGRAM_ALLOWED_CHAT_ID` is optional, but recommended after you know your chat id.
@@ -66,6 +67,7 @@ Telegram commands:
 /last_skips
 /review_skips
 /journal
+/positions
 /close trade_id --pnl 42.5 --note "manual result"
 ```
 
@@ -76,6 +78,7 @@ Bot -> status, ping, restart/stop instructions
 Scanner -> scanner status and skipped opportunities
 Skipped opportunities -> latest, review now, full loss, near zero, max plus, pending
 Journal -> journal summary and close-trade help
+My positions -> public Polymarket positions for `POLYMARKET_WALLET_ADDRESS`
 ```
 
 `/status` shows the latest 24/7 scanner heartbeat: last scan time, source, scanned/matched/sent counts, IV/BTC inputs, filters, and the latest error if one happened.
@@ -83,6 +86,8 @@ Journal -> journal summary and close-trade help
 `/last_skips` shows recently skipped or filtered-out opportunities, including reason, NO wins probability, edge, reward/risk, worst-case, and hypothetical PnL if NO wins or if touch happens.
 
 `/review_skips` checks skipped opportunities whose deadlines have passed. If Polymarket has closed the market, the bot records whether the skipped setup would have been profitable. The 24/7 scanner also runs this review automatically and sends a Telegram summary when new skipped results are reviewed.
+
+`/positions` shows current Polymarket positions for a public wallet/proxy wallet address using the public Data API. No private key is required. Set `POLYMARKET_WALLET_ADDRESS` in `.env`, or run `/positions 0x...` for a one-off lookup.
 
 After `/analyze` and `/scout`, Telegram shows inline buttons:
 
