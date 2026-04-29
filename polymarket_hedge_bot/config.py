@@ -9,7 +9,6 @@ class RiskConfig:
     tp_buffer: float = 100.0
     min_sl_distance: float = 2000.0
     max_leverage: float = 10.0
-    pm_fee: float = 0.00
     slippage: float = 0.02
     funding_buffer: float = 0.01
     basis_buffer: float = 0.01

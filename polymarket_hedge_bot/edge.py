@@ -20,7 +20,7 @@ def calculate_edge(fair_touch: float, no_price: float, config: RiskConfig) -> Ed
 
     fair_no = 1.0 - fair_touch
     total_buffer = (
-        config.pm_fee
+        config.pm_fee_rate
         + config.slippage
         + config.funding_buffer
         + config.basis_buffer
