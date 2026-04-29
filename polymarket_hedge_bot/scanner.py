@@ -1,5 +1,6 @@
 ﻿import argparse
 import dataclasses
+import html
 import json
 import os
 import threading
@@ -15,18 +16,19 @@ from polymarket_hedge_bot.config import RiskConfig
 from polymarket_hedge_bot.connectors.binance_futures import BinanceFuturesConnector
 from polymarket_hedge_bot.connectors.deribit import DeribitConnector
 from polymarket_hedge_bot.connectors.okx_futures import OkxFuturesConnector
-from polymarket_hedge_bot.formatting import positive_result_probability
+from polymarket_hedge_bot.formatting import money, positive_result_probability, ua_reason
 from polymarket_hedge_bot.journal import create_signal
 from polymarket_hedge_bot.live_discovery import discover_polymarket_btc_candidates_with_stats
 from polymarket_hedge_bot.scout import Opportunity, load_candidates, scout_candidates
 from polymarket_hedge_bot.skip_journal import opportunity_key, record_skips, render_review_summary, review_due_skips
-from polymarket_hedge_bot.status import now_iso, write_scanner_status
+from polymarket_hedge_bot.status import format_optional_percent, now_iso, write_scanner_status, zero_reason
 from polymarket_hedge_bot.telegram_bot import TelegramBot, TelegramResponse
 from polymarket_hedge_bot.telegram_views import render_scout_cards
 from polymarket_hedge_bot.utils import load_dotenv, safe_print
 
 
 SCANNER_STATE_PATH = Path("data") / "scanner_state.json"
+HEARTBEAT_STATE_KEY = "__scanner_no_signal_heartbeat__"
 
 
 @dataclass(frozen=True)
@@ -76,6 +78,7 @@ class ScannerConfig:
     min_reward_risk: float
     http_timeout: float
     max_workers: int
+    heartbeat_seconds: int
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -131,6 +134,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-reward-risk", type=float, default=0.25)
     parser.add_argument("--http-timeout", type=float, default=5.0, help="HTTP timeout for public market data requests")
     parser.add_argument("--max-workers", type=int, default=8, help="Parallel workers for market pages and orderbook checks")
+    parser.add_argument(
+        "--heartbeat-min",
+        type=float,
+        default=60.0,
+        help="Send a Telegram scanner summary when no signals pass filters. Set 0 to disable.",
+    )
     parser.add_argument("--once", action="store_true", help="Run one scan and exit")
     parser.add_argument("--dry-run", action="store_true", help="Print alerts instead of sending Telegram messages")
     return parser
@@ -183,7 +192,14 @@ def config_from_args(args: argparse.Namespace) -> ScannerConfig:
         min_reward_risk=args.min_reward_risk,
         http_timeout=args.http_timeout,
         max_workers=args.max_workers,
+        heartbeat_seconds=heartbeat_seconds_from_minutes(args.heartbeat_min),
     )
+
+
+def heartbeat_seconds_from_minutes(minutes: float) -> int:
+    if minutes <= 0:
+        return 0
+    return max(1, int(minutes * 60))
 
 
 def risk_config(config: ScannerConfig) -> RiskConfig:
@@ -637,6 +653,185 @@ def send_alerts(
     return sent
 
 
+def send_no_signal_heartbeat(
+    opportunities: list[Opportunity],
+    matched: list[Opportunity],
+    config: ScannerConfig,
+    diagnostics: dict[str, Any],
+    state: dict[str, Any],
+    bot: TelegramBot | None,
+    chat_id: str | None,
+    dry_run: bool,
+) -> bool:
+    if matched or config.heartbeat_seconds <= 0:
+        return False
+
+    now = time.time()
+    previous = state.get(HEARTBEAT_STATE_KEY) or {}
+    age = now - float(previous.get("sent_at", 0))
+    reason = zero_reason(diagnostics)
+    signature = heartbeat_signature(diagnostics, reason)
+    signature_changed = signature != previous.get("signature")
+    if age < config.heartbeat_seconds and not signature_changed:
+        return False
+
+    text = render_no_signal_heartbeat(opportunities, config, diagnostics, reason)
+    if dry_run:
+        safe_print(text)
+    else:
+        if bot is None or chat_id is None:
+            raise RuntimeError("Telegram bot/chat is not configured")
+        bot.send_report(chat_id, TelegramResponse(text=text, html=True))
+
+    state[HEARTBEAT_STATE_KEY] = {
+        "sent_at": now,
+        "signature": signature,
+    }
+    return True
+
+
+def heartbeat_signature(diagnostics: dict[str, Any], reason: str) -> str:
+    radar = (diagnostics.get("radar") or {}).get("rejected_by") or {}
+    prefilter = diagnostics.get("prefilter") or {}
+    return ":".join(
+        [
+            reason,
+            str(diagnostics.get("candidates_loaded", 0)),
+            str(diagnostics.get("candidates_after_prefilter", 0)),
+            str(diagnostics.get("opportunities_analyzed", 0)),
+            str(prefilter.get("deadline_filtered", 0)),
+            str(prefilter.get("no_price_filtered", 0)),
+            str(radar.get("score", 0)),
+            str(radar.get("edge", 0)),
+            str(radar.get("net_upside", 0)),
+            str(radar.get("reward_risk", 0)),
+        ]
+    )
+
+
+def render_no_signal_heartbeat(
+    opportunities: list[Opportunity],
+    config: ScannerConfig,
+    diagnostics: dict[str, Any],
+    reason: str,
+) -> str:
+    radar = diagnostics.get("radar") or {}
+    prefilter = diagnostics.get("prefilter") or {}
+    reject_counts = count_alert_rejections(opportunities, config)
+
+    lines = [
+        "<b>🟡 Scanner працює, сигналів немає</b>",
+        "",
+        f"• Кандидатів знайдено: <b>{diagnostics.get('candidates_loaded', 'n/a')}</b>",
+        f"• Після pre-filter: <b>{diagnostics.get('candidates_after_prefilter', 'n/a')}</b>",
+        f"• Проаналізовано: <b>{diagnostics.get('opportunities_analyzed', len(opportunities))}</b>",
+        "• Пройшли alert-фільтри: <b>0</b>",
+        f"• BTC: <b>{format_number(config.live_btc_price)}</b> | IV: <b>{format_optional_percent(config.live_iv)}</b>",
+        f"• Причина: {esc(reason or 'угоди є, але зараз не проходять фільтри якості.')}",
+    ]
+
+    if prefilter:
+        lines.extend(
+            [
+                "",
+                "<b>Pre-filter</b>",
+                f"• Дедлайн: <b>{prefilter.get('deadline_filtered', 0)}</b> "
+                f"(близько {prefilter.get('deadline_too_close_filtered', 0)}, далеко {prefilter.get('deadline_too_far_filtered', 0)})",
+                f"• NO price: <b>{prefilter.get('no_price_filtered', 0)}</b>",
+            ]
+        )
+
+    if reject_counts:
+        lines.extend(["", "<b>Alert-фільтри</b>"])
+        for label, key in alert_reject_labels():
+            if reject_counts.get(key, 0):
+                lines.append(f"• {label}: <b>{reject_counts[key]}</b>")
+
+    if radar.get("enabled"):
+        rejected_by = radar.get("rejected_by") or {}
+        lines.extend(
+            [
+                "",
+                "<b>Radar</b>",
+                f"• Пройшли radar: <b>{radar.get('matched', 0)}</b>",
+                f"• Відсіяно radar: <b>{radar.get('rejected', 0)}</b>",
+            ]
+        )
+        if rejected_by:
+            short_reasons = ", ".join(f"{key}: {value}" for key, value in rejected_by.items() if value)
+            lines.append(f"• Причини: <code>{esc(short_reasons)}</code>")
+
+    if opportunities:
+        best = opportunities[0]
+        lines.extend(
+            [
+                "",
+                "<b>Найближчий до сигналу</b>",
+                f"<code>{esc(best.candidate.slug)}</code>",
+                f"• Decision: <b>{esc(best.decision)}</b> | score <b>{best.score:.1f}</b>",
+                f"• Edge: <b>{best.edge.true_edge * 100:.1f}%</b> | NO <b>{best.edge.no_price:.3f}</b>",
+                f"• Net upside: <b>{money(best.quality.net_upside)}</b> | R/R <b>{best.quality.reward_risk:.2f}</b>",
+                f"• Причина: {esc(ua_reason(best.reason))}",
+            ]
+        )
+
+    lines.extend(["", "Детальніше: /status або /radar"])
+    return "\n".join(lines)
+
+
+def count_alert_rejections(opportunities: list[Opportunity], config: ScannerConfig) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for opportunity in opportunities:
+        reason = alert_reject_reason(opportunity, config)
+        if reason is None:
+            continue
+        counts[reason] = counts.get(reason, 0) + 1
+    return counts
+
+
+def alert_reject_reason(opportunity: Opportunity, config: ScannerConfig) -> str | None:
+    if decision_rank(opportunity.decision) < decision_rank(config.min_decision):
+        return "decision"
+    if opportunity.score < config.min_score:
+        return "score"
+    if opportunity.edge.true_edge < config.min_edge:
+        return "edge"
+    if opportunity.quality.net_upside < config.min_net_upside:
+        return "net_upside"
+    if opportunity.quality.reward_risk < config.min_reward_risk:
+        return "reward_risk"
+    if positive_result_probability(opportunity.edge, opportunity.costs) < config.min_positive_probability:
+        return "positive_probability"
+    if not opportunity.liquidity.ok:
+        return "liquidity"
+    return None
+
+
+def alert_reject_labels() -> list[tuple[str, str]]:
+    return [
+        ("Decision нижче порогу", "decision"),
+        ("Score", "score"),
+        ("Edge", "edge"),
+        ("Net upside", "net_upside"),
+        ("Reward/Risk", "reward_risk"),
+        ("NO wins probability", "positive_probability"),
+        ("Liquidity", "liquidity"),
+    ]
+
+
+def format_number(value: Any) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        return f"{float(value):,.2f}"
+    except (TypeError, ValueError):
+        return esc(value)
+
+
+def esc(value: Any) -> str:
+    return html.escape(str(value))
+
+
 def render_scanner_alert(opportunity: Opportunity) -> str:
     body = render_scout_cards([opportunity], top=1)
     return "<b>🚨 Новий сигнал від 24/7 scanner</b>\n\n" + body
@@ -736,6 +931,17 @@ def run_scanner_loop(
             diagnostics["matched_alert_filters"] = len(matched)
             diagnostics["sent_after_cooldown"] = sent
             diagnostics["skipped_logged"] = skipped_logged
+            heartbeat_sent = send_no_signal_heartbeat(
+                opportunities,
+                matched,
+                effective_config,
+                diagnostics,
+                state,
+                bot,
+                chat_id,
+                dry_run,
+            )
+            diagnostics["no_signal_heartbeat_sent"] = heartbeat_sent
             review_summary = review_due_skips(limit=10) if not dry_run else None
             if review_summary is not None and review_summary.reviewed > 0:
                 review_text = render_review_summary(review_summary)
@@ -832,6 +1038,7 @@ def write_scan_status(
             "live_orderbook": config.live_orderbook,
             "http_timeout": config.http_timeout,
             "max_workers": config.max_workers,
+            "heartbeat_seconds": config.heartbeat_seconds,
             "diagnostics": diagnostics or {},
             "error": error,
         }
