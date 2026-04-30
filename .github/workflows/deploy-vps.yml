@@ -71,9 +71,13 @@ jobs:
             python3 -m venv .venv
             .venv/bin/pip install -r requirements.txt
             if [ "$(id -u)" -eq 0 ]; then
+              cp deploy/polymarket-bot.service.example /etc/systemd/system/polymarket-bot.service
+              systemctl daemon-reload
               systemctl restart polymarket-bot
               systemctl --no-pager --lines=30 status polymarket-bot
             else
+              sudo cp deploy/polymarket-bot.service.example /etc/systemd/system/polymarket-bot.service
+              sudo systemctl daemon-reload
               sudo systemctl restart polymarket-bot
               sudo systemctl --no-pager --lines=30 status polymarket-bot
             fi
