@@ -158,16 +158,18 @@ python -m polymarket_hedge_bot.scanner `
   --candidates examples/candidates.json `
   --interval 60 `
   --min-decision WATCH `
-  --min-score 60 `
-  --min-edge 0.10 `
-  --min-positive-probability 0.60 `
-  --min-hours-to-deadline 6 `
+  --min-score 30 `
+  --min-edge 0.03 `
+  --min-positive-probability 0.50 `
+  --min-hours-to-deadline 3 `
   --min-no-price 0.05 `
-  --max-no-price 0.90 `
+  --max-no-price 0.97 `
+  --min-net-upside 0 `
+  --min-reward-risk 0.10 `
   --cooldown-min 30
 ```
 
-The scanner sends only filtered opportunities and avoids duplicate alerts during the cooldown window. The deadline and NO-price pre-filters remove noisy late-stage markets before hedge analysis, so skipped opportunities stay cleaner too.
+The scanner now defaults to a softer potential-setup mode: it can send WATCH-quality ideas for review and paper trading, while still labeling clean entries as ENTER. It avoids duplicate alerts during the cooldown window. The deadline and NO-price pre-filters remove noisy late-stage markets before hedge analysis, so skipped opportunities stay cleaner too.
 
 ### Faster market data mode
 
@@ -177,8 +179,8 @@ For quicker discovery, the scanner now fetches Polymarket pages and CLOB orderbo
 --interval       how often the scanner runs, default 60s
 --http-timeout   timeout for each public API request, default 5s
 --max-workers    parallel workers for Polymarket pages/orderbooks, default 8
---min-hours-to-deadline  ignore markets too close to resolution, default 6h
---min-no-price / --max-no-price  keep NO price in a sane range, default 0.05-0.90
+--min-hours-to-deadline  ignore markets too close to resolution, default 3h
+--min-no-price / --max-no-price  keep NO price in a sane range, default 0.05-0.97
 --radar-*        softer observation filters for /radar, enabled by default
 ```
 
@@ -197,9 +199,14 @@ Recommended VPS fast mode:
   --interval 15 \
   --http-timeout 4 \
   --max-workers 10 \
-  --min-hours-to-deadline 6 \
+  --min-score 30 \
+  --min-edge 0.03 \
+  --min-positive-probability 0.50 \
+  --min-hours-to-deadline 3 \
   --min-no-price 0.05 \
-  --max-no-price 0.90
+  --max-no-price 0.97 \
+  --min-net-upside 0 \
+  --min-reward-risk 0.10
 ```
 
 This is still polling. The lowest-latency upgrade is WebSocket streaming:

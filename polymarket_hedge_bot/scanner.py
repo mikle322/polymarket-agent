@@ -102,10 +102,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-loss", type=float, default=200.0)
     parser.add_argument("--max-futures-margin", type=float, default=2500.0)
     parser.add_argument("--min-decision", choices=["WATCH", "ENTER"], default="WATCH")
-    parser.add_argument("--min-score", type=float, default=60.0)
-    parser.add_argument("--min-edge", type=float, default=0.10)
-    parser.add_argument("--min-positive-probability", type=float, default=0.60)
-    parser.add_argument("--min-hours-to-deadline", type=float, default=6.0)
+    parser.add_argument("--min-score", type=float, default=30.0)
+    parser.add_argument("--min-edge", type=float, default=0.03)
+    parser.add_argument("--min-positive-probability", type=float, default=0.50)
+    parser.add_argument("--min-hours-to-deadline", type=float, default=3.0)
     parser.add_argument(
         "--max-days-to-deadline",
         type=float,
@@ -113,7 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Ignore markets that settle later than this many days. Default keeps daily/weekly/monthly markets.",
     )
     parser.add_argument("--min-no-price", type=float, default=0.05)
-    parser.add_argument("--max-no-price", type=float, default=0.90)
+    parser.add_argument("--max-no-price", type=float, default=0.97)
     parser.add_argument("--no-radar", action="store_true", help="Disable soft radar candidates in scanner status")
     parser.add_argument("--radar-top", type=int, default=5)
     parser.add_argument("--radar-min-score", type=float, default=10.0)
@@ -132,8 +132,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--futures-fee-rate", type=float, default=0.0005)
     parser.add_argument("--funding-rate", type=float)
     parser.add_argument("--funding-periods", type=float, default=1.0)
-    parser.add_argument("--min-net-upside", type=float, default=30.0)
-    parser.add_argument("--min-reward-risk", type=float, default=0.25)
+    parser.add_argument("--min-net-upside", type=float, default=0.0)
+    parser.add_argument("--min-reward-risk", type=float, default=0.10)
     parser.add_argument("--http-timeout", type=float, default=5.0, help="HTTP timeout for public market data requests")
     parser.add_argument("--max-workers", type=int, default=8, help="Parallel workers for market pages and orderbook checks")
     parser.add_argument(
@@ -836,7 +836,11 @@ def esc(value: Any) -> str:
 
 def render_scanner_alert(opportunity: Opportunity) -> str:
     body = render_scout_cards([opportunity], top=1)
-    return "<b>🚨 Новий сигнал від 24/7 scanner</b>\n\n" + body
+    if opportunity.decision == "ENTER":
+        title = "🚨 Новий ENTER-сигнал від 24/7 scanner"
+    else:
+        title = "🟡 Новий potential setup від 24/7 scanner"
+    return f"<b>{title}</b>\n\n" + body
 
 
 def alert_key(opportunity: Opportunity) -> str:
