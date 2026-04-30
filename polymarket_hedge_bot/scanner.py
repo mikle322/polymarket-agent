@@ -109,8 +109,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-days-to-deadline",
         type=float,
-        default=365.0,
-        help="Ignore markets that settle later than this many days. Default keeps long-running BTC touch markets visible.",
+        default=35.0,
+        help="Ignore markets that settle later than this many days.",
     )
     parser.add_argument("--min-no-price", type=float, default=0.01)
     parser.add_argument("--max-no-price", type=float, default=0.99)
@@ -120,7 +120,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--radar-min-edge", type=float, default=0.0)
     parser.add_argument("--radar-min-positive-probability", type=float, default=0.50)
     parser.add_argument("--radar-min-hours-to-deadline", type=float, default=3.0)
-    parser.add_argument("--radar-max-days-to-deadline", type=float, default=365.0)
+    parser.add_argument("--radar-max-days-to-deadline", type=float, default=35.0)
     parser.add_argument("--radar-min-no-price", type=float, default=0.01)
     parser.add_argument("--radar-max-no-price", type=float, default=0.99)
     parser.add_argument("--radar-min-net-upside", type=float, default=0.0)
