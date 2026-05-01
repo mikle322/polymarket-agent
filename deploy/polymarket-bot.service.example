@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/opt/polymarket-agent
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/opt/polymarket-agent/.venv/bin/python -m polymarket_hedge_bot.bot_runner --live-polymarket --stake 200 --live-pages 5 --live-limit 100 --live-min-liquidity 500 --live-orderbook --interval 15 --http-timeout 4 --max-workers 10 --max-loss 200 --max-iv 1.5 --min-decision WATCH --min-score 30 --min-edge 0.03 --min-positive-probability 0.50 --min-hours-to-deadline 48 --max-days-to-deadline 60 --min-no-price 0.40 --max-no-price 0.50 --min-net-upside 0 --min-reward-risk 0.10 --radar-min-hours-to-deadline 48 --radar-max-days-to-deadline 60 --radar-min-no-price 0.40 --radar-max-no-price 0.50 --cooldown-min 30 --heartbeat-min 60
+ExecStart=/opt/polymarket-agent/.venv/bin/python -m polymarket_hedge_bot.bot_runner --live-polymarket --stake 200 --live-pages 5 --live-limit 100 --live-min-liquidity 500 --live-orderbook --interval 15 --http-timeout 4 --max-workers 10 --max-loss 200 --max-iv 1.5 --min-decision WATCH --min-score 30 --min-edge 0.03 --min-positive-probability 0.50 --min-hours-to-deadline 48 --max-days-to-deadline 60 --min-no-price 0.40 --max-no-price 0.60 --min-net-upside 0 --min-reward-risk 0.10 --radar-min-hours-to-deadline 48 --radar-max-days-to-deadline 60 --radar-min-no-price 0.40 --radar-max-no-price 0.60 --cooldown-min 30 --heartbeat-min 60
 Restart=always
 RestartSec=10
 

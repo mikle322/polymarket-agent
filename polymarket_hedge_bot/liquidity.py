@@ -141,7 +141,7 @@ def estimate_limit_buy_opportunity(
     stake: float,
     reference_price: float,
     min_price: float = 0.40,
-    max_price: float = 0.50,
+    max_price: float = 0.60,
     max_spread: float = 0.08,
     tick_size: float = 0.001,
 ) -> LiquidityCheck:
@@ -181,19 +181,6 @@ def estimate_limit_buy_opportunity(
 
     filled_shares = stake / limit_price
     resting_bid_cost = sum(level.price * level.size for level in usable_bids if level.price >= limit_price - 1e-9)
-
-    if reference_price < min_price or reference_price > max_price:
-        return LiquidityCheck(
-            False,
-            "reference NO price is outside limit-entry strategy range",
-            requested_cost=stake,
-            filled_shares=filled_shares,
-            limit_price=limit_price,
-            best_bid=best_bid,
-            best_ask=best_ask,
-            available_cost=resting_bid_cost,
-            spread=spread,
-        )
 
     if best_bid is not None and best_bid > max_price:
         return LiquidityCheck(
