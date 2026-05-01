@@ -211,6 +211,8 @@ def render_why_no_signals() -> str:
             if value:
                 lines.append(f"• {esc(key)}: <b>{value}</b>")
 
+    lines.extend(render_alert_rejection_diagnostics(diagnostics))
+
     lines.extend(
         [
             "",
@@ -224,6 +226,26 @@ def render_why_no_signals() -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def render_alert_rejection_diagnostics(diagnostics: dict[str, Any]) -> list[str]:
+    examples = diagnostics.get("alert_rejections") or []
+    if not examples:
+        return []
+
+    lines = ["", "<b>Точні причини по найближчих угодах</b>"]
+    for index, item in enumerate(examples[:5], start=1):
+        lines.extend(
+            [
+                f"{index}. <code>{esc(item.get('slug', 'unknown'))}</code>",
+                f"• Етап: <b>{esc(item.get('stage', 'unknown'))}</b>",
+                f"• Decision: <b>{esc(item.get('decision', 'n/a'))}</b> | score <b>{float(item.get('score', 0.0)):.1f}</b>",
+                f"• Причина моделі: {esc(item.get('reason', 'unknown'))}",
+            ]
+        )
+        for failure in (item.get("failures") or [])[:6]:
+            lines.append(f"  - {esc(failure)}")
+    return lines
 
 
 def render_radar_rejection_lines(radar: dict[str, Any]) -> list[str]:

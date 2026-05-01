@@ -330,6 +330,7 @@ def evaluate_opportunities(config: ScannerConfig) -> tuple[list[Opportunity], Sc
     diagnostics["shared_analysis_opportunities"] = len(opportunities)
     diagnostics["opportunities_analyzed"] = len(strict_opportunities)
     diagnostics["evaluation_errors"] = evaluation_errors
+    diagnostics["alert_rejections"] = alert_rejection_diagnostics(strict_opportunities, config)
     diagnostics["radar"] = evaluate_radar(opportunities, config, analysis_prefilter_stats, evaluation_errors)
     timings["evaluate_total_seconds"] = elapsed_seconds(evaluate_started)
     return strict_opportunities, config, diagnostics
@@ -695,6 +696,8 @@ def send_no_signal_heartbeat(
 def heartbeat_signature(diagnostics: dict[str, Any], reason: str) -> str:
     radar = (diagnostics.get("radar") or {}).get("rejected_by") or {}
     prefilter = diagnostics.get("prefilter") or {}
+    alert_rejections = diagnostics.get("alert_rejections") or []
+    first_alert_rejection = alert_rejections[0] if alert_rejections else {}
     return ":".join(
         [
             reason,
@@ -707,6 +710,8 @@ def heartbeat_signature(diagnostics: dict[str, Any], reason: str) -> str:
             str(radar.get("edge", 0)),
             str(radar.get("net_upside", 0)),
             str(radar.get("reward_risk", 0)),
+            str(first_alert_rejection.get("slug", "")),
+            "|".join(str(item) for item in first_alert_rejection.get("failures", [])),
         ]
     )
 
@@ -719,6 +724,7 @@ def render_no_signal_heartbeat(
 ) -> str:
     radar = diagnostics.get("radar") or {}
     prefilter = diagnostics.get("prefilter") or {}
+    alert_rejections = diagnostics.get("alert_rejections") or []
     reject_counts = count_alert_rejections(opportunities, config)
 
     lines = [
@@ -748,6 +754,20 @@ def render_no_signal_heartbeat(
         for label, key in alert_reject_labels():
             if reject_counts.get(key, 0):
                 lines.append(f"• {label}: <b>{reject_counts[key]}</b>")
+
+    if alert_rejections:
+        lines.extend(["", "<b>Точні причини по найближчих угодах</b>"])
+        for index, item in enumerate(alert_rejections[:5], start=1):
+            lines.extend(
+                [
+                    f"{index}. <code>{esc(item.get('slug', 'unknown'))}</code>",
+                    f"• Етап: <b>{esc(item.get('stage', 'unknown'))}</b>",
+                    f"• Decision: <b>{esc(item.get('decision', 'n/a'))}</b> | score <b>{float(item.get('score', 0.0)):.1f}</b>",
+                    f"• Причина моделі: {esc(item.get('reason', 'unknown'))}",
+                ]
+            )
+            for failure in (item.get("failures") or [])[:6]:
+                lines.append(f"  - {esc(failure)}")
 
     if radar.get("enabled"):
         rejected_by = radar.get("rejected_by") or {}
@@ -789,6 +809,53 @@ def count_alert_rejections(opportunities: list[Opportunity], config: ScannerConf
             continue
         counts[reason] = counts.get(reason, 0) + 1
     return counts
+
+
+def alert_rejection_diagnostics(
+    opportunities: list[Opportunity],
+    config: ScannerConfig,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    diagnostics: list[dict[str, Any]] = []
+    for opportunity in opportunities:
+        failures = alert_reject_details(opportunity, config)
+        if not failures:
+            continue
+        diagnostics.append(
+            {
+                "stage": "Alert-фільтри",
+                "slug": opportunity.candidate.slug,
+                "decision": opportunity.decision,
+                "score": opportunity.score,
+                "reason": ua_reason(opportunity.reason),
+                "failures": failures,
+            }
+        )
+        if len(diagnostics) >= limit:
+            break
+    return diagnostics
+
+
+def alert_reject_details(opportunity: Opportunity, config: ScannerConfig) -> list[str]:
+    failures: list[str] = []
+    if decision_rank(opportunity.decision) < decision_rank(config.min_decision):
+        failures.append(f"Decision {opportunity.decision} < {config.min_decision}")
+    if opportunity.score < config.min_score:
+        failures.append(f"Score {opportunity.score:.1f} < {config.min_score:.1f}")
+    if opportunity.edge.true_edge < config.min_edge:
+        failures.append(f"Edge {opportunity.edge.true_edge * 100:.1f}% < {config.min_edge * 100:.1f}%")
+    if opportunity.quality.net_upside < config.min_net_upside:
+        failures.append(f"Net upside {money(opportunity.quality.net_upside)} < {money(config.min_net_upside)}")
+    if opportunity.quality.reward_risk < config.min_reward_risk:
+        failures.append(f"Reward/Risk {opportunity.quality.reward_risk:.2f} < {config.min_reward_risk:.2f}")
+    positive_probability = positive_result_probability(opportunity.edge, opportunity.costs)
+    if positive_probability < config.min_positive_probability:
+        failures.append(
+            f"NO win probability {positive_probability * 100:.1f}% < {config.min_positive_probability * 100:.1f}%"
+        )
+    if not opportunity.liquidity.ok:
+        failures.append(f"Liquidity: {opportunity.liquidity.reason}")
+    return failures
 
 
 def alert_reject_reason(opportunity: Opportunity, config: ScannerConfig) -> str | None:
