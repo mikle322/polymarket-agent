@@ -763,6 +763,7 @@ def render_no_signal_heartbeat(
                     f"{index}. <code>{esc(item.get('slug', 'unknown'))}</code>",
                     f"• Етап: <b>{esc(item.get('stage', 'unknown'))}</b>",
                     f"• Decision: <b>{esc(item.get('decision', 'n/a'))}</b> | score <b>{float(item.get('score', 0.0)):.1f}</b>",
+                    f"• Чому пропустили: {esc(item.get('skip_summary', item.get('reason', 'unknown')))}",
                     f"• Причина моделі: {esc(item.get('reason', 'unknown'))}",
                 ]
             )
@@ -828,6 +829,7 @@ def alert_rejection_diagnostics(
                 "decision": opportunity.decision,
                 "score": opportunity.score,
                 "reason": ua_reason(opportunity.reason),
+                "skip_summary": alert_skip_summary(opportunity, config),
                 "failures": failures,
             }
         )
@@ -856,6 +858,40 @@ def alert_reject_details(opportunity: Opportunity, config: ScannerConfig) -> lis
     if not opportunity.liquidity.ok:
         failures.append(f"Liquidity: {opportunity.liquidity.reason}")
     return failures
+
+
+def alert_skip_summary(opportunity: Opportunity, config: ScannerConfig) -> str:
+    if decision_rank(opportunity.decision) < decision_rank(config.min_decision):
+        return (
+            "Пропустили, бо модель дала "
+            f"{opportunity.decision}, а для сигналу потрібен мінімум {config.min_decision}."
+        )
+    if opportunity.score < config.min_score:
+        return f"Пропустили, бо score {opportunity.score:.1f} нижчий за поріг {config.min_score:.1f}."
+    if opportunity.edge.true_edge < config.min_edge:
+        return (
+            "Пропустили, бо edge "
+            f"{opportunity.edge.true_edge * 100:.1f}% нижчий за мінімум {config.min_edge * 100:.1f}%."
+        )
+    if opportunity.quality.net_upside < config.min_net_upside:
+        return (
+            "Пропустили, бо net upside "
+            f"{money(opportunity.quality.net_upside)} нижчий за мінімум {money(config.min_net_upside)}."
+        )
+    if opportunity.quality.reward_risk < config.min_reward_risk:
+        return (
+            "Пропустили, бо reward/risk "
+            f"{opportunity.quality.reward_risk:.2f} нижчий за мінімум {config.min_reward_risk:.2f}."
+        )
+    positive_probability = positive_result_probability(opportunity.edge, opportunity.costs)
+    if positive_probability < config.min_positive_probability:
+        return (
+            "Пропустили, бо ймовірність позитивного результату "
+            f"{positive_probability * 100:.1f}% нижча за мінімум {config.min_positive_probability * 100:.1f}%."
+        )
+    if not opportunity.liquidity.ok:
+        return f"Пропустили через ліквідність: {ua_reason(opportunity.liquidity.reason)}."
+    return f"Пропустили: {ua_reason(opportunity.reason)}"
 
 
 def alert_reject_reason(opportunity: Opportunity, config: ScannerConfig) -> str | None:

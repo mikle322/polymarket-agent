@@ -240,6 +240,7 @@ def render_alert_rejection_diagnostics(diagnostics: dict[str, Any]) -> list[str]
                 f"{index}. <code>{esc(item.get('slug', 'unknown'))}</code>",
                 f"• Етап: <b>{esc(item.get('stage', 'unknown'))}</b>",
                 f"• Decision: <b>{esc(item.get('decision', 'n/a'))}</b> | score <b>{float(item.get('score', 0.0)):.1f}</b>",
+                f"• Чому пропустили: {esc(item.get('skip_summary', item.get('reason', 'unknown')))}",
                 f"• Причина моделі: {esc(item.get('reason', 'unknown'))}",
             ]
         )
