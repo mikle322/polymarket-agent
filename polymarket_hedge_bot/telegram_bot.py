@@ -473,6 +473,14 @@ def run_analyze_with_buttons(argv: list[str]) -> TelegramResponse:
             "futures_size_btc": hedge.size_btc,
             "futures_leverage": hedge.leverage,
             "worst_case_after_sl": decision.worst_case_after_sl,
+            "payout_multiple": costs.payout_multiple,
+            "net_no_win_flat": costs.net_no_win_flat,
+            "net_touch_with_hedge_tp": costs.net_touch_with_hedge_tp,
+            "net_no_win_after_hedge_sl": costs.net_no_win_after_hedge_sl,
+            "net_touch_after_hedge_sl_loss": costs.net_touch_after_hedge_sl_loss,
+            "touch_break_even_price": costs.touch_break_even_price,
+            "no_win_after_sl_break_even_price": costs.no_win_after_sl_break_even_price,
+            "no_exit_break_even_price": costs.no_exit_break_even_price,
         },
     )
     return TelegramResponse(text=text, reply_markup=entered_keyboard(signal.signal_id), html=True)
@@ -511,6 +519,14 @@ def run_scout_with_buttons(argv: list[str]) -> TelegramResponse:
                 "futures_size_btc": opportunity.hedge.size_btc,
                 "futures_leverage": opportunity.hedge.leverage,
                 "worst_case_after_sl": opportunity.worst_case_after_sl,
+                "payout_multiple": opportunity.costs.payout_multiple,
+                "net_no_win_flat": opportunity.costs.net_no_win_flat,
+                "net_touch_with_hedge_tp": opportunity.costs.net_touch_with_hedge_tp,
+                "net_no_win_after_hedge_sl": opportunity.costs.net_no_win_after_hedge_sl,
+                "net_touch_after_hedge_sl_loss": opportunity.costs.net_touch_after_hedge_sl_loss,
+                "touch_break_even_price": opportunity.costs.touch_break_even_price,
+                "no_win_after_sl_break_even_price": opportunity.costs.no_win_after_sl_break_even_price,
+                "no_exit_break_even_price": opportunity.costs.no_exit_break_even_price,
             },
         )
         buttons.append([{"text": f"Зайшов #{index}", "callback_data": f"entered:{signal.signal_id}"}])
@@ -986,6 +1002,14 @@ def run_scout_with_buttons(argv: list[str]) -> TelegramResponse:
                 "futures_size_btc": opportunity.hedge.size_btc,
                 "futures_leverage": opportunity.hedge.leverage,
                 "worst_case_after_sl": opportunity.worst_case_after_sl,
+                "payout_multiple": opportunity.costs.payout_multiple,
+                "net_no_win_flat": opportunity.costs.net_no_win_flat,
+                "net_touch_with_hedge_tp": opportunity.costs.net_touch_with_hedge_tp,
+                "net_no_win_after_hedge_sl": opportunity.costs.net_no_win_after_hedge_sl,
+                "net_touch_after_hedge_sl_loss": opportunity.costs.net_touch_after_hedge_sl_loss,
+                "touch_break_even_price": opportunity.costs.touch_break_even_price,
+                "no_win_after_sl_break_even_price": opportunity.costs.no_win_after_sl_break_even_price,
+                "no_exit_break_even_price": opportunity.costs.no_exit_break_even_price,
             },
         )
         buttons.append([{"text": f"✅ Зайшов #{index}", "callback_data": f"entered:{signal.signal_id}"}])

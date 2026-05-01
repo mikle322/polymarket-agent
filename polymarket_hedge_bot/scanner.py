@@ -44,6 +44,7 @@ class ScannerConfig:
     live_limit: int
     live_min_liquidity: float
     deribit_lookback_minutes: int
+    max_iv: float
     binance_symbol: str
     okx_inst_id: str
     interval_seconds: int
@@ -95,6 +96,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--live-limit", type=int, default=100)
     parser.add_argument("--live-min-liquidity", type=float, default=0.0)
     parser.add_argument("--deribit-lookback-min", type=int, default=30)
+    parser.add_argument("--max-iv", type=float, default=1.5, help="Block new signals when annualized IV is above this value")
     parser.add_argument("--binance-symbol", default="BTCUSDT")
     parser.add_argument("--okx-inst-id", default="BTC-USDT-SWAP")
     parser.add_argument("--interval", type=int, default=60, help="Scan interval in seconds")
@@ -105,24 +107,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-score", type=float, default=30.0)
     parser.add_argument("--min-edge", type=float, default=0.03)
     parser.add_argument("--min-positive-probability", type=float, default=0.50)
-    parser.add_argument("--min-hours-to-deadline", type=float, default=3.0)
+    parser.add_argument("--min-hours-to-deadline", type=float, default=20.0 * 24.0)
     parser.add_argument(
         "--max-days-to-deadline",
         type=float,
-        default=35.0,
+        default=60.0,
         help="Ignore markets that settle later than this many days.",
     )
-    parser.add_argument("--min-no-price", type=float, default=0.01)
-    parser.add_argument("--max-no-price", type=float, default=0.99)
+    parser.add_argument("--min-no-price", type=float, default=0.40)
+    parser.add_argument("--max-no-price", type=float, default=0.50)
     parser.add_argument("--no-radar", action="store_true", help="Disable soft radar candidates in scanner status")
     parser.add_argument("--radar-top", type=int, default=5)
     parser.add_argument("--radar-min-score", type=float, default=10.0)
     parser.add_argument("--radar-min-edge", type=float, default=0.0)
     parser.add_argument("--radar-min-positive-probability", type=float, default=0.50)
-    parser.add_argument("--radar-min-hours-to-deadline", type=float, default=3.0)
-    parser.add_argument("--radar-max-days-to-deadline", type=float, default=35.0)
-    parser.add_argument("--radar-min-no-price", type=float, default=0.01)
-    parser.add_argument("--radar-max-no-price", type=float, default=0.99)
+    parser.add_argument("--radar-min-hours-to-deadline", type=float, default=20.0 * 24.0)
+    parser.add_argument("--radar-max-days-to-deadline", type=float, default=60.0)
+    parser.add_argument("--radar-min-no-price", type=float, default=0.40)
+    parser.add_argument("--radar-max-no-price", type=float, default=0.50)
     parser.add_argument("--radar-min-net-upside", type=float, default=0.0)
     parser.add_argument("--radar-min-reward-risk", type=float, default=0.0)
     parser.add_argument("--cooldown-min", type=float, default=30.0)
@@ -158,6 +160,7 @@ def config_from_args(args: argparse.Namespace) -> ScannerConfig:
         live_limit=args.live_limit,
         live_min_liquidity=args.live_min_liquidity,
         deribit_lookback_minutes=args.deribit_lookback_min,
+        max_iv=args.max_iv,
         binance_symbol=args.binance_symbol,
         okx_inst_id=args.okx_inst_id,
         interval_seconds=args.interval,
@@ -280,6 +283,23 @@ def evaluate_opportunities(config: ScannerConfig) -> tuple[list[Opportunity], Sc
     timings["market_inputs_total_seconds"] = elapsed_seconds(started)
 
     diagnostics: dict[str, Any] = {"timings": timings}
+    if config.live_iv is not None and config.live_iv > config.max_iv:
+        diagnostics.update(
+            {
+                "candidates_loaded": 0,
+                "candidates_after_prefilter": 0,
+                "opportunities_analyzed": 0,
+                "matched_alert_filters": 0,
+                "volatility": {
+                    "blocked": True,
+                    "iv": config.live_iv,
+                    "max_iv": config.max_iv,
+                    "reason": f"IV {config.live_iv * 100:.1f}% > max {config.max_iv * 100:.1f}%",
+                },
+            }
+        )
+        return [], config, diagnostics
+
     if config.live_polymarket:
         if config.live_btc_price is None:
             raise ValueError("--btc-price is required with --live-polymarket when Binance price is unavailable")
@@ -429,7 +449,10 @@ def serialize_radar_opportunity(opportunity: Opportunity) -> dict[str, Any]:
         "take_profit": opportunity.hedge.take_profit,
         "stop_loss": opportunity.hedge.stop_loss,
         "net_no_win": opportunity.costs.net_no_win_after_hedge_sl,
+        "net_no_win_flat": opportunity.costs.net_no_win_flat,
         "net_touch": opportunity.costs.net_touch_after_hedge_sl_loss,
+        "touch_break_even_price": opportunity.costs.touch_break_even_price,
+        "no_exit_break_even_price": opportunity.costs.no_exit_break_even_price,
     }
 
 
@@ -638,6 +661,14 @@ def send_alerts(
                     "futures_size_btc": opportunity.hedge.size_btc,
                     "futures_leverage": opportunity.hedge.leverage,
                     "worst_case_after_sl": opportunity.worst_case_after_sl,
+                    "payout_multiple": opportunity.costs.payout_multiple,
+                    "net_no_win_flat": opportunity.costs.net_no_win_flat,
+                    "net_touch_with_hedge_tp": opportunity.costs.net_touch_with_hedge_tp,
+                    "net_no_win_after_hedge_sl": opportunity.costs.net_no_win_after_hedge_sl,
+                    "net_touch_after_hedge_sl_loss": opportunity.costs.net_touch_after_hedge_sl_loss,
+                    "touch_break_even_price": opportunity.costs.touch_break_even_price,
+                    "no_win_after_sl_break_even_price": opportunity.costs.no_win_after_sl_break_even_price,
+                    "no_exit_break_even_price": opportunity.costs.no_exit_break_even_price,
                 },
             )
             reply_markup = {"inline_keyboard": [[{"text": "Зайшов", "callback_data": f"entered:{signal.signal_id}"}]]}
@@ -1158,6 +1189,7 @@ def write_scan_status(
             "http_timeout": config.http_timeout,
             "max_workers": config.max_workers,
             "heartbeat_seconds": config.heartbeat_seconds,
+            "max_iv": config.max_iv,
             "diagnostics": diagnostics or {},
             "error": error,
         }

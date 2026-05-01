@@ -173,9 +173,14 @@ def journal_summary(limit: int = 10) -> str:
 
     for trade in trades[-limit:][::-1]:
         pnl = "" if trade.realized_pnl is None else f" | PnL {money(trade.realized_pnl)}"
+        flat = trade.payload.get("net_no_win_flat")
+        hedge_be = trade.payload.get("touch_break_even_price")
+        scenario = ""
+        if flat is not None and hedge_be is not None:
+            scenario = f" | flat {money(float(flat))} | hedge BE {money(float(hedge_be))}"
         lines.append(
             f"{trade.trade_id} | {trade.status} | {trade.decision} | "
-            f"{trade.positive_probability * 100:.1f}% | {trade.title}{pnl}"
+            f"{trade.positive_probability * 100:.1f}% | {trade.title}{scenario}{pnl}"
         )
 
     return "\n".join(lines)
@@ -187,4 +192,3 @@ def ensure_dirs() -> None:
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-

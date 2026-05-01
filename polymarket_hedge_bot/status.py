@@ -426,6 +426,9 @@ def missing_fields_total(discovery: dict[str, Any]) -> int:
 def zero_reason(diagnostics: dict[str, Any]) -> str:
     discovery = diagnostics.get("discovery") or {}
     prefilter = diagnostics.get("prefilter") or {}
+    volatility = diagnostics.get("volatility") or {}
+    if volatility.get("blocked"):
+        return str(volatility.get("reason") or "волатильність вище дозволеного порогу для нових входів.")
     if int_or_zero(diagnostics.get("candidates_loaded")) > 0 and int_or_zero(
         diagnostics.get("candidates_after_prefilter")
     ) == 0:

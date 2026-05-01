@@ -156,6 +156,7 @@ def format_analyze_report(
         f"Touch probability: {pct(edge.fair_touch)}",
         f"Fair NO: {pct(edge.fair_no)}",
         f"NO entry price: {edge.no_price:.3f}",
+        f"Коефіцієнт ставки: {costs.payout_multiple:.2f}x",
         f"True edge: {pct(edge.true_edge)}",
         f"Futures notional: {money(hedge.notional)}",
         f"Очікуваний hedge TP profit: {money(hedge.expected_tp_profit)}",
@@ -168,6 +169,9 @@ def format_analyze_report(
         f"Net якщо touch + hedge TP: {money(costs.net_touch_with_hedge_tp)}",
         f"Net якщо hedge SL, потім NO wins: {money(costs.net_no_win_after_hedge_sl)}",
         f"Net якщо hedge SL, потім touch: {money(costs.net_touch_after_hedge_sl_loss)}",
+        f"Touch hedge break-even: {money(costs.touch_break_even_price)}",
+        f"NO після hedge SL break-even: {costs.no_win_after_sl_break_even_price:.3f}",
+        f"Достроковий NO exit break-even: {costs.no_exit_break_even_price:.3f}",
         f"Якість угоди: {quality.label if quality else 'n/a'}",
         f"Net upside: {money(quality.net_upside) if quality else 'n/a'}",
         f"Reward/Risk: {quality.reward_risk:.2f}" if quality else "Reward/Risk: n/a",
@@ -209,7 +213,7 @@ def format_scout_report(opportunities: list[Opportunity], top: int) -> str:
                 f"Питання: {candidate.question}",
                 f"Причина: {ua_reason(opportunity.reason)}",
                 f"Рекомендація: {recommendation_text(opportunity.decision, edge, costs, opportunity.worst_case_after_sl, opportunity.liquidity)}",
-                f"Touch: {pct(edge.fair_touch)} | Fair NO: {pct(edge.fair_no)} | NO: {edge.no_price:.3f} | Edge: {pct(edge.true_edge)}",
+                f"Touch: {pct(edge.fair_touch)} | Fair NO: {pct(edge.fair_no)} | NO: {edge.no_price:.3f} | Коеф: {costs.payout_multiple:.2f}x | Edge: {pct(edge.true_edge)}",
             ]
         )
         if opportunity.liquidity.vwap is not None:
@@ -225,6 +229,7 @@ def format_scout_report(opportunities: list[Opportunity], top: int) -> str:
                 f"Futures: notional {money(hedge.notional)} | SL loss {money(hedge.expected_sl_loss)}",
                 f"Витрати: TP path {money(costs.total_cost_to_tp)} | SL path {money(costs.total_cost_to_sl)} | funding {money(costs.funding_cost)}",
                 f"Net scenarios: flat/no-touch {money(costs.net_no_win_flat)} | touch+TP {money(costs.net_touch_with_hedge_tp)} | SL+NO wins {money(costs.net_no_win_after_hedge_sl)} | SL+touch {money(costs.net_touch_after_hedge_sl_loss)}",
+                f"Break-even: hedge {money(costs.touch_break_even_price)} | NO after SL {costs.no_win_after_sl_break_even_price:.3f} | NO exit {costs.no_exit_break_even_price:.3f}",
                 f"Якість: {opportunity.quality.label} | Net upside {money(opportunity.quality.net_upside)} | Reward/Risk {opportunity.quality.reward_risk:.2f}",
                 f"Worst-case після SL + PM touch: {money(opportunity.worst_case_after_sl)}",
                 f"Post-SL план: {ua_reason(opportunity.post_sl_action)}",

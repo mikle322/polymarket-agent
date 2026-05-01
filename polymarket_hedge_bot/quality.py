@@ -23,7 +23,14 @@ def calculate_quality(
         costs.net_no_win_after_hedge_sl,
         costs.net_touch_with_hedge_tp,
     )
-    worst_downside = abs(min(costs.net_touch_after_hedge_sl_loss, costs.net_touch_with_hedge_tp, 0.0))
+    worst_downside = abs(
+        min(
+            costs.net_touch_after_hedge_sl_loss,
+            costs.net_touch_with_hedge_tp,
+            costs.net_no_win_after_hedge_sl,
+            0.0,
+        )
+    )
     reward_risk = net_upside / worst_downside if worst_downside > 0 else float("inf")
 
     if net_upside < min_net_upside:

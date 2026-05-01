@@ -4,9 +4,9 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class RiskConfig:
     max_loss_per_trade: float = 200.0
-    default_coverage: float = 0.60
-    max_coverage: float = 0.70
-    tp_buffer: float = 100.0
+    default_coverage: float = 1.00
+    max_coverage: float = 1.25
+    tp_buffer: float = 0.0
     min_sl_distance: float = 2000.0
     max_leverage: float = 10.0
     slippage: float = 0.02
