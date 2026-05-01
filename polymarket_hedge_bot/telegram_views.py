@@ -51,6 +51,18 @@ def beginner_summary(decision: str) -> str:
     return summaries.get(decision, "Потрібна додаткова перевірка.")
 
 
+def limit_entry_line(liquidity: LiquidityCheck, fallback_price: float) -> str:
+    limit_price = liquidity.limit_price if liquidity.limit_price is not None else fallback_price
+    parts = [f"• PM limit: купити {code('NO')} по <b>{limit_price:.3f}</b>"]
+    if liquidity.best_bid is not None or liquidity.best_ask is not None:
+        bid = "n/a" if liquidity.best_bid is None else f"{liquidity.best_bid:.3f}"
+        ask = "n/a" if liquidity.best_ask is None else f"{liquidity.best_ask:.3f}"
+        parts.append(f"bid/ask <b>{bid}/{ask}</b>")
+    if liquidity.spread is not None:
+        parts.append(f"spread <b>{liquidity.spread:.3f}</b>")
+    return " | ".join(parts)
+
+
 def render_analyze_card(
     market: str,
     stake: float,
@@ -78,6 +90,7 @@ def render_analyze_card(
             "",
             "🛠 <b>План дії</b>",
             f"• PM: купити {code('NO')} лімітним ордером на <b>{money(stake)}</b>",
+            limit_entry_line(liquidity, edge.no_price),
             f"• Futures: {code(hedge.side)} <b>{hedge.size_btc:.6f} BTC</b>",
             "• Біржа hedge: <b>Binance Futures</b>",
             f"• Плече: <b>{hedge.leverage:.1f}x isolated</b>",
@@ -141,6 +154,7 @@ def render_scout_cards(opportunities: list[Opportunity], top: int) -> str:
                 "",
                 "🛠 <b>Дія</b>",
                 f"• PM: купити {code('NO')} лімітним ордером на <b>{money(candidate.stake)}</b> -> <b>{opportunity.pm_shares:.2f}</b> shares",
+                limit_entry_line(opportunity.liquidity, edge.no_price),
                 f"• Futures: {code(hedge.side)} <b>{hedge.size_btc:.6f} BTC</b> | <b>{hedge.leverage:.1f}x isolated</b>",
                 "• Біржа hedge: <b>Binance Futures</b>",
                 f"• Margin: <b>{money(hedge.isolated_margin)}</b>",

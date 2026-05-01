@@ -15,11 +15,14 @@ class LiquidityCheck:
     filled_cost: float = 0.0
     filled_shares: float = 0.0
     vwap: float | None = None
+    limit_price: float | None = None
+    best_bid: float | None = None
     best_ask: float | None = None
     worst_price: float | None = None
     levels_used: int = 0
     available_cost: float = 0.0
     slippage_from_best: float | None = None
+    spread: float | None = None
 
 
 def check_basic_liquidity(spread: float | None, available_liquidity: float | None, stake: float) -> LiquidityCheck:
@@ -129,4 +132,121 @@ def estimate_buy_from_asks(
         levels_used=levels_used,
         available_cost=available_cost,
         slippage_from_best=slippage_from_best,
+    )
+
+
+def estimate_limit_buy_opportunity(
+    bids: list[OrderLevel],
+    asks: list[OrderLevel],
+    stake: float,
+    reference_price: float,
+    min_price: float = 0.40,
+    max_price: float = 0.50,
+    max_spread: float = 0.08,
+    tick_size: float = 0.001,
+) -> LiquidityCheck:
+    if stake <= 0:
+        raise ValueError("stake must be positive")
+
+    usable_bids = sorted(
+        (level for level in bids if level.price > 0 and level.size > 0),
+        key=lambda level: level.price,
+        reverse=True,
+    )
+    usable_asks = sorted(
+        (level for level in asks if level.price > 0 and level.size > 0),
+        key=lambda level: level.price,
+    )
+    if not usable_bids and not usable_asks:
+        return LiquidityCheck(False, "orderbook has no usable bid/ask levels", requested_cost=stake)
+
+    best_bid = usable_bids[0].price if usable_bids else None
+    best_ask = usable_asks[0].price if usable_asks else None
+    spread = best_ask - best_bid if best_bid is not None and best_ask is not None else None
+
+    anchor = reference_price
+    if best_bid is not None and best_ask is not None:
+        anchor = (best_bid + best_ask) / 2.0
+    elif best_bid is not None:
+        anchor = best_bid + tick_size
+    elif best_ask is not None:
+        anchor = min(best_ask, reference_price)
+
+    limit_price = min(max_price, max(min_price, anchor))
+    if best_ask is not None:
+        limit_price = min(limit_price, max(min_price, best_ask - tick_size))
+    if best_bid is not None:
+        limit_price = max(limit_price, best_bid + tick_size)
+    limit_price = min(max_price, max(min_price, round(limit_price, 3)))
+
+    filled_shares = stake / limit_price
+    resting_bid_cost = sum(level.price * level.size for level in usable_bids if level.price >= limit_price - 1e-9)
+
+    if reference_price < min_price or reference_price > max_price:
+        return LiquidityCheck(
+            False,
+            "reference NO price is outside limit-entry strategy range",
+            requested_cost=stake,
+            filled_shares=filled_shares,
+            limit_price=limit_price,
+            best_bid=best_bid,
+            best_ask=best_ask,
+            available_cost=resting_bid_cost,
+            spread=spread,
+        )
+
+    if best_bid is not None and best_bid > max_price:
+        return LiquidityCheck(
+            False,
+            "best bid is already above max strategy price; lower maker bid is unlikely to fill soon",
+            requested_cost=stake,
+            filled_shares=filled_shares,
+            limit_price=limit_price,
+            best_bid=best_bid,
+            best_ask=best_ask,
+            available_cost=resting_bid_cost,
+            spread=spread,
+        )
+
+    if spread is not None and spread > max_spread:
+        return LiquidityCheck(
+            False,
+            "orderbook spread is too wide for a realistic limit entry",
+            requested_cost=stake,
+            filled_shares=filled_shares,
+            limit_price=limit_price,
+            best_bid=best_bid,
+            best_ask=best_ask,
+            available_cost=resting_bid_cost,
+            spread=spread,
+        )
+
+    if limit_price < min_price or limit_price > max_price:
+        return LiquidityCheck(
+            False,
+            "suggested limit price is outside strategy range",
+            requested_cost=stake,
+            filled_shares=filled_shares,
+            limit_price=limit_price,
+            best_bid=best_bid,
+            best_ask=best_ask,
+            available_cost=resting_bid_cost,
+            spread=spread,
+        )
+
+    return LiquidityCheck(
+        True,
+        "realistic NO limit order candidate",
+        requested_cost=stake,
+        filled_cost=stake,
+        filled_shares=filled_shares,
+        vwap=limit_price,
+        limit_price=limit_price,
+        best_bid=best_bid,
+        best_ask=best_ask,
+        worst_price=limit_price,
+        levels_used=0,
+        available_cost=resting_bid_cost,
+        slippage_from_best=0.0,
+        spread=spread,
     )

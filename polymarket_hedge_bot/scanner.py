@@ -107,7 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-score", type=float, default=30.0)
     parser.add_argument("--min-edge", type=float, default=0.03)
     parser.add_argument("--min-positive-probability", type=float, default=0.50)
-    parser.add_argument("--min-hours-to-deadline", type=float, default=20.0 * 24.0)
+    parser.add_argument("--min-hours-to-deadline", type=float, default=2.0 * 24.0)
     parser.add_argument(
         "--max-days-to-deadline",
         type=float,
@@ -121,7 +121,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--radar-min-score", type=float, default=10.0)
     parser.add_argument("--radar-min-edge", type=float, default=0.0)
     parser.add_argument("--radar-min-positive-probability", type=float, default=0.50)
-    parser.add_argument("--radar-min-hours-to-deadline", type=float, default=20.0 * 24.0)
+    parser.add_argument("--radar-min-hours-to-deadline", type=float, default=2.0 * 24.0)
     parser.add_argument("--radar-max-days-to-deadline", type=float, default=60.0)
     parser.add_argument("--radar-min-no-price", type=float, default=0.40)
     parser.add_argument("--radar-max-no-price", type=float, default=0.50)
@@ -529,6 +529,8 @@ def scout_candidates_safe(candidates: list, config: ScannerConfig) -> tuple[list
             max_futures_margin=config.max_futures_margin,
             use_live_orderbook=config.live_orderbook,
             max_slippage=config.max_slippage,
+            min_limit_price=config.min_no_price,
+            max_limit_price=config.max_no_price,
             max_workers=1,
             polymarket_timeout=config.http_timeout,
         )
@@ -774,8 +776,11 @@ def render_no_signal_heartbeat(
             [
                 "",
                 "<b>Pre-filter</b>",
+                f"• Вікно стратегії: <b>{config.min_hours_to_deadline / 24.0:.1f}-{config.max_hours_to_deadline / 24.0:.1f}d</b>",
                 f"• Дедлайн: <b>{prefilter.get('deadline_filtered', 0)}</b> "
                 f"(близько {prefilter.get('deadline_too_close_filtered', 0)}, далеко {prefilter.get('deadline_too_far_filtered', 0)})",
+                f"  - близько = менше <b>{config.min_hours_to_deadline / 24.0:.1f}d</b>",
+                f"  - далеко = більше <b>{config.max_hours_to_deadline / 24.0:.1f}d</b>",
                 f"• NO price: <b>{prefilter.get('no_price_filtered', 0)}</b>",
             ]
         )

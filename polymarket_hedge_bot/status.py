@@ -435,8 +435,11 @@ def zero_reason(diagnostics: dict[str, Any]) -> str:
         deadline_filtered = int_or_zero(prefilter.get("deadline_filtered"))
         deadline_too_far_filtered = int_or_zero(prefilter.get("deadline_too_far_filtered"))
         no_price_filtered = int_or_zero(prefilter.get("no_price_filtered"))
+        deadline_too_close_filtered = int_or_zero(prefilter.get("deadline_too_close_filtered"))
+        if deadline_too_far_filtered and deadline_too_close_filtered:
+            return "кандидати є, але жоден не потрапив у вікно стратегії за дедлайном: частина надто близько, частина надто далеко."
         if deadline_too_far_filtered:
-            return "угоди є, але вони далі нашого горизонту day/week/month і не підходять для швидкої стратегії."
+            return "кандидати є, але вони далі максимального дедлайну стратегії."
         if deadline_filtered and no_price_filtered:
             return "кандидати були, але pre-filter відсіяв їх через близький дедлайн або нездорову ціну NO."
         if deadline_filtered:

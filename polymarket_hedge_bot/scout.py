@@ -11,7 +11,7 @@ from polymarket_hedge_bot.costs import CostResult, calculate_costs
 from polymarket_hedge_bot.decision import make_decision
 from polymarket_hedge_bot.edge import EdgeResult, calculate_edge
 from polymarket_hedge_bot.hedge import HedgeResult, calculate_futures_hedge
-from polymarket_hedge_bot.liquidity import LiquidityCheck, check_basic_liquidity, estimate_buy_from_asks
+from polymarket_hedge_bot.liquidity import LiquidityCheck, check_basic_liquidity, estimate_limit_buy_opportunity
 from polymarket_hedge_bot.probability import touch_probability, years_until
 from polymarket_hedge_bot.quality import QualityResult, calculate_quality
 
@@ -100,11 +100,20 @@ def evaluate_candidate(
     polymarket: PolymarketConnector | None = None,
     use_live_orderbook: bool = False,
     max_slippage: float | None = 0.03,
+    min_limit_price: float = 0.40,
+    max_limit_price: float = 0.50,
 ) -> Opportunity:
     t = years_until(candidate.deadline)
     fair_touch = touch_probability(candidate.btc_price, candidate.strike, candidate.iv, t, candidate.direction)
-    liquidity = _check_liquidity(candidate, polymarket, use_live_orderbook, max_slippage)
-    no_price = liquidity.vwap if liquidity.vwap is not None else candidate.no_price
+    liquidity = _check_liquidity(
+        candidate,
+        polymarket,
+        use_live_orderbook,
+        max_slippage,
+        min_limit_price,
+        max_limit_price,
+    )
+    no_price = liquidity.limit_price if liquidity.limit_price is not None else candidate.no_price
     edge = calculate_edge(fair_touch, no_price, config)
     hedge = calculate_futures_hedge(
         pm_invested=candidate.stake,
@@ -158,6 +167,8 @@ def scout_candidates(
     max_futures_margin: float | None = None,
     use_live_orderbook: bool = False,
     max_slippage: float | None = 0.03,
+    min_limit_price: float = 0.40,
+    max_limit_price: float = 0.50,
     max_workers: int = 8,
     polymarket_timeout: float = 5.0,
 ) -> list[Opportunity]:
@@ -170,6 +181,8 @@ def scout_candidates(
             polymarket=polymarket,
             use_live_orderbook=use_live_orderbook,
             max_slippage=max_slippage,
+            min_limit_price=min_limit_price,
+            max_limit_price=max_limit_price,
         )
 
     if use_live_orderbook and len(candidates) > 1:
@@ -186,6 +199,8 @@ def _check_liquidity(
     polymarket: PolymarketConnector | None,
     use_live_orderbook: bool,
     max_slippage: float | None,
+    min_limit_price: float,
+    max_limit_price: float,
 ) -> LiquidityCheck:
     if use_live_orderbook:
         if polymarket is None:
@@ -193,5 +208,15 @@ def _check_liquidity(
         if not candidate.no_token_id:
             return LiquidityCheck(False, "live orderbook requested, but candidate has no no_token_id")
         book = polymarket.get_orderbook(candidate.no_token_id)
-        return estimate_buy_from_asks(book.asks, candidate.stake, max_slippage=max_slippage)
+        max_spread = max(0.08, max_slippage) if max_slippage is not None else 0.08
+        return estimate_limit_buy_opportunity(
+            book.bids,
+            book.asks,
+            candidate.stake,
+            reference_price=candidate.no_price,
+            min_price=min_limit_price,
+            max_price=max_limit_price,
+            max_spread=max_spread,
+            tick_size=book.tick_size or 0.001,
+        )
     return check_basic_liquidity(candidate.spread, candidate.liquidity, candidate.stake)
