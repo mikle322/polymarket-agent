@@ -14,6 +14,7 @@ class CostResult:
     total_cost_to_tp: float
     total_cost_to_sl: float
     pm_gross_profit_if_no_wins: float
+    net_no_win_without_hedge_sl: float
     net_touch_with_hedge_tp: float
     net_no_win_after_hedge_sl: float
     net_touch_after_hedge_sl_loss: float
@@ -54,6 +55,7 @@ def calculate_costs(
         total_cost_to_tp=total_cost_to_tp,
         total_cost_to_sl=total_cost_to_sl,
         pm_gross_profit_if_no_wins=pm_gross_profit_if_no_wins,
+        net_no_win_without_hedge_sl=pm_gross_profit_if_no_wins - total_cost_to_sl,
         net_touch_with_hedge_tp=hedge.expected_tp_profit - stake - total_cost_to_tp,
         net_no_win_after_hedge_sl=pm_gross_profit_if_no_wins - hedge.expected_sl_loss - total_cost_to_sl,
         net_touch_after_hedge_sl_loss=-(stake + hedge.expected_sl_loss + total_cost_to_sl),

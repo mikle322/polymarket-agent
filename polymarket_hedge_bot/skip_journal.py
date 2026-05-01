@@ -170,7 +170,7 @@ def render_last_skips(limit: int = 10) -> str:
                 f"NO wins: {pct(record.no_win_probability)} | Edge: {pct(record.edge)} | NO: {record.no_price:.3f}",
                 f"Якість: {record.quality_label} | Net upside: {money(record.net_upside)} | Reward/Risk: {record.reward_risk:.2f}",
                 f"Worst-case: {money(record.worst_case_after_sl)}",
-                f"Якби NO wins: {money(record.hypothetical_no_win_pnl)} | Якби touch: {money(record.hypothetical_touch_pnl)}",
+                f"Якби NO wins після SL: {money(record.hypothetical_no_win_pnl)} | Якби touch: {money(record.hypothetical_touch_pnl)}",
                 f"Дедлайн: {record.deadline}",
                 f"Review: {verdict}",
                 "",

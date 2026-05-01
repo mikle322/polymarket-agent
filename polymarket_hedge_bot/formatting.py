@@ -47,9 +47,9 @@ def ua_reason(reason: str) -> str:
 
 
 def positive_result_probability(edge: EdgeResult, costs: CostResult) -> float:
-    if costs.net_no_win_after_hedge_sl <= 0:
-        return 0.0
-    probability = edge.fair_no
+    probability = 0.0
+    if max(costs.net_no_win_without_hedge_sl, costs.net_no_win_after_hedge_sl) > 0:
+        probability += edge.fair_no
     if costs.net_touch_with_hedge_tp > 0:
         probability += edge.fair_touch
     return min(1.0, max(0.0, probability))
@@ -163,6 +163,7 @@ def format_analyze_report(
         f"Витрати до TP: {money(costs.total_cost_to_tp)}",
         f"Витрати до SL: {money(costs.total_cost_to_sl)}",
         f"Funding cost: {money(costs.funding_cost)}",
+        f"Net якщо NO wins без hedge SL: {money(costs.net_no_win_without_hedge_sl)}",
         f"Net якщо touch + hedge TP: {money(costs.net_touch_with_hedge_tp)}",
         f"Net якщо hedge SL, потім NO wins: {money(costs.net_no_win_after_hedge_sl)}",
         f"Net якщо hedge SL, потім touch: {money(costs.net_touch_after_hedge_sl_loss)}",
@@ -222,7 +223,7 @@ def format_scout_report(opportunities: list[Opportunity], top: int) -> str:
             [
                 f"Futures: notional {money(hedge.notional)} | SL loss {money(hedge.expected_sl_loss)}",
                 f"Витрати: TP path {money(costs.total_cost_to_tp)} | SL path {money(costs.total_cost_to_sl)} | funding {money(costs.funding_cost)}",
-                f"Net scenarios: touch+TP {money(costs.net_touch_with_hedge_tp)} | SL+NO wins {money(costs.net_no_win_after_hedge_sl)} | SL+touch {money(costs.net_touch_after_hedge_sl_loss)}",
+                f"Net scenarios: NO wins no SL {money(costs.net_no_win_without_hedge_sl)} | touch+TP {money(costs.net_touch_with_hedge_tp)} | SL+NO wins {money(costs.net_no_win_after_hedge_sl)} | SL+touch {money(costs.net_touch_after_hedge_sl_loss)}",
                 f"Якість: {opportunity.quality.label} | Net upside {money(opportunity.quality.net_upside)} | Reward/Risk {opportunity.quality.reward_risk:.2f}",
                 f"Worst-case після SL + PM touch: {money(opportunity.worst_case_after_sl)}",
                 f"Post-SL план: {ua_reason(opportunity.post_sl_action)}",
