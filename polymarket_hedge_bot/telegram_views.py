@@ -91,7 +91,7 @@ def render_analyze_card(
             f"• SL loss: <b>{money(hedge.expected_sl_loss)}</b>",
             "",
             "💰 <b>Чисті сценарії</b>",
-            f"• NO wins без SL: <b>{money(costs.net_no_win_without_hedge_sl)}</b>",
+            f"• Флет / no-touch: <b>{money(costs.net_no_win_flat)}</b>",
             f"• touch + TP: <b>{money(costs.net_touch_with_hedge_tp)}</b>",
             f"• SL + NO wins: <b>{money(costs.net_no_win_after_hedge_sl)}</b>",
             f"• SL + touch: <b>{money(costs.net_touch_after_hedge_sl_loss)}</b>",
@@ -142,7 +142,7 @@ def render_scout_cards(opportunities: list[Opportunity], top: int) -> str:
                 f"• Touch: <b>{pct(edge.fair_touch)}</b> | Fair NO: <b>{pct(edge.fair_no)}</b> | Edge: <b>{pct(edge.true_edge)}</b>",
                 f"• Net upside: <b>{money(opportunity.quality.net_upside)}</b> | Reward/Risk: <b>{opportunity.quality.reward_risk:.2f}</b>",
                 f"• Worst-case: <b>{money(opportunity.worst_case_after_sl)}</b>",
-                f"• Net: NO wins no SL <b>{money(costs.net_no_win_without_hedge_sl)}</b> | TP <b>{money(costs.net_touch_with_hedge_tp)}</b> | SL+NO wins <b>{money(costs.net_no_win_after_hedge_sl)}</b> | touch <b>{money(costs.net_touch_after_hedge_sl_loss)}</b>",
+                f"• Net: flat/no-touch <b>{money(costs.net_no_win_flat)}</b> | TP <b>{money(costs.net_touch_with_hedge_tp)}</b> | SL+NO wins <b>{money(costs.net_no_win_after_hedge_sl)}</b> | touch <b>{money(costs.net_touch_after_hedge_sl_loss)}</b>",
                 f"• Ліквідність: {tag(ua_reason(opportunity.liquidity.reason))}",
             ]
         )

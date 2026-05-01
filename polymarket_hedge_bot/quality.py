@@ -19,7 +19,7 @@ def calculate_quality(
     min_reward_risk: float = 0.25,
 ) -> QualityResult:
     net_upside = max(
-        costs.net_no_win_without_hedge_sl,
+        costs.net_no_win_flat,
         costs.net_no_win_after_hedge_sl,
         costs.net_touch_with_hedge_tp,
     )

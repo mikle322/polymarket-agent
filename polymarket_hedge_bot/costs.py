@@ -11,9 +11,11 @@ class CostResult:
     futures_tp_exit_fee: float
     futures_sl_exit_fee: float
     funding_cost: float
+    total_cost_to_flat: float
     total_cost_to_tp: float
     total_cost_to_sl: float
     pm_gross_profit_if_no_wins: float
+    net_no_win_flat: float
     net_no_win_without_hedge_sl: float
     net_touch_with_hedge_tp: float
     net_no_win_after_hedge_sl: float
@@ -33,6 +35,7 @@ def calculate_costs(
 
     pm_fee = stake * config.pm_fee_rate
     futures_entry_fee = hedge.notional * config.futures_fee_rate
+    futures_flat_exit_fee = hedge.notional * config.futures_fee_rate
     futures_tp_exit_fee = (hedge.size_btc * hedge.take_profit) * config.futures_fee_rate
     futures_sl_exit_fee = (hedge.size_btc * hedge.stop_loss) * config.futures_fee_rate
     funding_cost = calculate_funding_cost(
@@ -42,9 +45,11 @@ def calculate_costs(
         config.funding_periods,
     )
 
+    total_cost_to_flat = pm_fee + futures_entry_fee + futures_flat_exit_fee + funding_cost
     total_cost_to_tp = pm_fee + futures_entry_fee + futures_tp_exit_fee + funding_cost
     total_cost_to_sl = pm_fee + futures_entry_fee + futures_sl_exit_fee + funding_cost
     pm_gross_profit_if_no_wins = (stake / no_price) - stake
+    net_no_win_flat = pm_gross_profit_if_no_wins - total_cost_to_flat
 
     return CostResult(
         pm_fee=pm_fee,
@@ -52,10 +57,12 @@ def calculate_costs(
         futures_tp_exit_fee=futures_tp_exit_fee,
         futures_sl_exit_fee=futures_sl_exit_fee,
         funding_cost=funding_cost,
+        total_cost_to_flat=total_cost_to_flat,
         total_cost_to_tp=total_cost_to_tp,
         total_cost_to_sl=total_cost_to_sl,
         pm_gross_profit_if_no_wins=pm_gross_profit_if_no_wins,
-        net_no_win_without_hedge_sl=pm_gross_profit_if_no_wins - total_cost_to_sl,
+        net_no_win_flat=net_no_win_flat,
+        net_no_win_without_hedge_sl=net_no_win_flat,
         net_touch_with_hedge_tp=hedge.expected_tp_profit - stake - total_cost_to_tp,
         net_no_win_after_hedge_sl=pm_gross_profit_if_no_wins - hedge.expected_sl_loss - total_cost_to_sl,
         net_touch_after_hedge_sl_loss=-(stake + hedge.expected_sl_loss + total_cost_to_sl),
