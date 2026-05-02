@@ -28,6 +28,7 @@ from polymarket_hedge_bot.journal import (
     record_entry,
     update_futures_leg,
     update_pm_leg,
+    update_trade_payload,
 )
 from polymarket_hedge_bot.liquidity import check_basic_liquidity
 from polymarket_hedge_bot.opportunity_history import render_history_summary
@@ -623,12 +624,13 @@ def render_help_card() -> str:
 
 
 def render_journal_card(limit: int = 10) -> str:
-    from polymarket_hedge_bot.journal import load_trades
+    from polymarket_hedge_bot.journal import calculate_total_pnl, load_trades
 
     trades = load_trades()
     open_trades = [trade for trade in trades if trade.status == "OPEN"]
     closed = [trade for trade in trades if trade.status == "CLOSED"]
     realized = [trade.realized_pnl for trade in closed if trade.realized_pnl is not None]
+    open_leg_pnl = sum(calculate_total_pnl(trade) for trade in open_trades)
     total_pnl = sum(realized)
     wins = sum(1 for pnl in realized if pnl > 0)
     losses = sum(1 for pnl in realized if pnl < 0)
@@ -641,6 +643,7 @@ def render_journal_card(limit: int = 10) -> str:
         f"• Відкриті: <b>{len(open_trades)}</b>",
         f"• Закриті: <b>{len(closed)}</b>",
         f"• Realized PnL: <b>{money(total_pnl)}</b>",
+        f"• Поточний PnL по відкритих ногах: <b>{money(open_leg_pnl)}</b>",
         f"• Winrate: <b>{winrate * 100:.1f}%</b>" if winrate is not None else "• Winrate: <b>ще немає закритих угод</b>",
         f"• Wins / Losses: <b>{wins}</b> / <b>{losses}</b>",
         "",
@@ -653,7 +656,8 @@ def render_journal_card(limit: int = 10) -> str:
 
     for trade in trades[-limit:][::-1]:
         icon = "🟢" if trade.status == "OPEN" else "✅"
-        pnl = "" if trade.realized_pnl is None else f" | PnL <b>{money(trade.realized_pnl)}</b>"
+        leg_total = calculate_total_pnl(trade)
+        pnl = f" | PnL <b>{money(trade.realized_pnl)}</b>" if trade.realized_pnl is not None else f" | legs <b>{money(leg_total)}</b>"
         payload = trade.payload or {}
         pm_line = ""
         if payload.get("pm_price") is not None:
@@ -665,6 +669,8 @@ def render_journal_card(limit: int = 10) -> str:
             )
             if payload.get("pm_pnl") is not None:
                 pm_line += f" | PnL {money(float(payload.get('pm_pnl', 0.0)))}"
+            if payload.get("pm_current_value") is not None:
+                pm_line += f" | value {money(float(payload.get('pm_current_value', 0.0)))}"
         futures_line = ""
         if payload.get("futures_entry_price") is not None:
             futures_line = (
@@ -687,6 +693,8 @@ def render_journal_card(limit: int = 10) -> str:
             lines.append(pm_line)
         if futures_line:
             lines.append(futures_line)
+        if payload.get("pm_pnl") is not None or payload.get("futures_pnl") is not None:
+            lines.append(f"• Разом по ногах: <b>{money(leg_total)}</b>")
     return "\n".join(lines)
 
 
@@ -742,6 +750,7 @@ def journal_menu_keyboard() -> dict[str, Any]:
     return {
         "inline_keyboard": [
             [{"text": "🔄 Оновити журнал", "callback_data": "menu:journal"}],
+            [{"text": "🟦 Оновити PM PnL", "callback_data": "menu:journal_sync_pm"}],
             [{"text": "➕ Добавити", "callback_data": "menu:journal_add"}],
             [{"text": "💼 Мої позиції Polymarket", "callback_data": "menu:positions"}],
             [{"text": "🧾 Як закрити угоду", "callback_data": "menu:journal_help"}],
@@ -902,6 +911,132 @@ def load_recent_polymarket_positions(
     return all_positions[:limit], checked_wallets, proxy_wallet
 
 
+def load_polymarket_positions_for_journal(
+    connector: PolymarketDataConnector,
+    wallet: str,
+    limit: int = 200,
+) -> tuple[list[Any], list[str], str | None]:
+    checked_wallets: list[str] = []
+    proxy_wallet: str | None = None
+    try:
+        proxy_wallet = connector.get_proxy_wallet(wallet)
+    except Exception:
+        proxy_wallet = None
+
+    wallets = [item for item in [proxy_wallet, wallet] if item]
+    positions: list[Any] = []
+    seen_wallets: set[str] = set()
+    seen_positions: set[str] = set()
+    for candidate_wallet in wallets:
+        normalized_wallet = candidate_wallet.lower()
+        if normalized_wallet in seen_wallets:
+            continue
+        seen_wallets.add(normalized_wallet)
+        checked_wallets.append(candidate_wallet)
+        for position in connector.get_positions(
+            candidate_wallet,
+            limit=limit,
+            size_threshold=0.0,
+            sort_by="CURRENT",
+            sort_direction="DESC",
+        ):
+            key = position.asset or f"{position.condition_id}:{position.outcome_index}"
+            if key in seen_positions:
+                continue
+            seen_positions.add(key)
+            positions.append(position)
+    return positions, checked_wallets, proxy_wallet
+
+
+def sync_journal_polymarket_response() -> TelegramResponse:
+    from polymarket_hedge_bot.journal import load_trades
+
+    wallet = os.environ.get("POLYMARKET_WALLET_ADDRESS") or os.environ.get("POLYMARKET_PROXY_WALLET")
+    if not wallet:
+        return TelegramResponse(
+            "⚠️ <b>Не бачу Polymarket wallet</b>\n\n"
+            "Додай у <code>.env</code>:\n<code>POLYMARKET_WALLET_ADDRESS=0x...</code>",
+            reply_markup=journal_menu_keyboard(),
+            html=True,
+        )
+
+    connector = PolymarketDataConnector(timeout=8)
+    try:
+        positions, checked_wallets, proxy_wallet = load_polymarket_positions_for_journal(connector, wallet)
+    except Exception as exc:
+        return TelegramResponse(
+            "⚠️ <b>Не вдалося оновити PM PnL</b>\n\n"
+            f"Причина: <code>{html.escape(str(exc))}</code>",
+            reply_markup=journal_menu_keyboard(),
+            html=True,
+        )
+
+    updated = 0
+    skipped = 0
+    for trade in load_trades():
+        payload = trade.payload or {}
+        if payload.get("pm_price") is None:
+            continue
+        position = find_matching_polymarket_position(trade, positions)
+        if position is None:
+            skipped += 1
+            continue
+        update_trade_payload(
+            trade.trade_id,
+            {
+                "pm_slug": polymarket_position_slug(position),
+                "pm_current_value": polymarket_position_current_value(position),
+                "pm_pnl": polymarket_position_pnl(position),
+                "pm_status": polymarket_position_status(position),
+            },
+        )
+        updated += 1
+
+    checked = ", ".join(short_wallet(item) for item in checked_wallets) if checked_wallets else short_wallet(wallet)
+    lines = [
+        "🟦 <b>PM PnL оновлено</b>",
+        "━━━━━━━━━━━━━━━━",
+        f"• Оновлено угод: <b>{updated}</b>",
+        f"• Не знайшов збіг: <b>{skipped}</b>",
+        f"• Checked: <code>{html.escape(checked)}</code>",
+    ]
+    if proxy_wallet:
+        lines.append(f"• Proxy: <code>{html.escape(short_wallet(proxy_wallet))}</code>")
+    lines.extend(["", render_journal_card()])
+    return TelegramResponse("\n".join(lines), reply_markup=journal_menu_keyboard(), html=True)
+
+
+def find_matching_polymarket_position(trade: Any, positions: list[Any]) -> Any | None:
+    payload = trade.payload or {}
+    trade_slug = normalize_match_text(str(payload.get("pm_slug") or ""))
+    trade_title = normalize_match_text(str(trade.title or ""))
+    trade_outcome = normalize_match_text(str(payload.get("pm_outcome") or ""))
+
+    best_position = None
+    best_score = 0
+    for position in positions:
+        position_slug = normalize_match_text(polymarket_position_slug(position))
+        position_title = normalize_match_text(polymarket_position_title(position))
+        position_outcome = normalize_match_text(polymarket_position_outcome(position))
+        score = 0
+        if trade_slug and trade_slug == position_slug:
+            score += 6
+        if trade_title and trade_title == position_title:
+            score += 5
+        elif trade_title and (trade_title in position_title or position_title in trade_title):
+            score += 3
+        if trade_outcome and trade_outcome == position_outcome:
+            score += 2
+        if score > best_score:
+            best_score = score
+            best_position = position
+    return best_position if best_score >= 3 else None
+
+
+def normalize_match_text(value: str) -> str:
+    return " ".join(value.lower().replace("-", " ").replace("_", " ").split())
+
+
 def save_journal_pm_positions(positions: list[Any]) -> None:
     JOURNAL_PM_POSITIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
     payload = [serialize_polymarket_position(position) for position in positions[:5]]
@@ -944,6 +1079,9 @@ def handle_polymarket_position_callback(data: str) -> TelegramResponse:
         shares=float(position.get("shares") or 0.0),
         cost=float(position.get("cost") or 0.0),
         pnl=float(position.get("pnl") or 0.0),
+        slug=str(position.get("slug") or ""),
+        current_value=float(position.get("current_value") or 0.0),
+        status=str(position.get("status") or ""),
     )
     return TelegramResponse(
         "✅ <b>Polymarket позицію додано в журнал</b>\n"
@@ -1146,6 +1284,8 @@ def handle_text_command(text: str) -> TelegramResponse:
         return TelegramResponse(review_skips(), reply_markup=skips_menu_keyboard(), html=True)
     if text == "/journal":
         return TelegramResponse(render_journal_card(), reply_markup=journal_menu_keyboard(), html=True)
+    if text in {"/sync_pm", "/sync_polymarket"}:
+        return sync_journal_polymarket_response()
     if text.startswith("/trade"):
         return TelegramResponse(render_trade_command(text), reply_markup=journal_menu_keyboard(), html=True)
     if text.startswith("/pm_fill"):
@@ -1264,6 +1404,8 @@ def handle_menu_callback(data: str) -> TelegramResponse:
         return TelegramResponse(render_skips_bucket("pending"), reply_markup=skips_menu_keyboard(), html=True)
     if action == "journal":
         return TelegramResponse(render_journal_card(), reply_markup=journal_menu_keyboard(), html=True)
+    if action == "journal_sync_pm":
+        return sync_journal_polymarket_response()
     if action == "journal_add":
         return TelegramResponse(
             "➕ <b>Добавити в журнал</b>\n"

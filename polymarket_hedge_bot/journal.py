@@ -136,13 +136,24 @@ def record_polymarket_position(
     cost: float,
     pnl: float | None = None,
     trade_id: str | None = None,
+    slug: str | None = None,
+    current_value: float | None = None,
+    status: str | None = None,
 ) -> TradeRecord:
     with _JOURNAL_LOCK:
         target_id = trade_id or latest_open_trade_id()
     if target_id is None:
         trade = create_manual_trade(title)
         target_id = trade.trade_id
-    return update_pm_leg(target_id, "BUY", outcome, price, shares, cost, pnl)
+    trade = update_pm_leg(target_id, "BUY", outcome, price, shares, cost, pnl)
+    return update_trade_payload(
+        trade.trade_id,
+        {
+            "pm_slug": slug,
+            "pm_current_value": current_value,
+            "pm_status": status,
+        },
+    )
 
 
 def latest_open_trade_id() -> str | None:
