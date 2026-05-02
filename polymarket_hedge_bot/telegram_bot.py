@@ -21,6 +21,7 @@ from polymarket_hedge_bot.journal import close_trade, create_signal, journal_sum
 from polymarket_hedge_bot.liquidity import check_basic_liquidity
 from polymarket_hedge_bot.opportunity_history import render_history_summary
 from polymarket_hedge_bot.paper_trading import render_paper_review_summary, render_paper_summary, review_due_paper_trades
+from polymarket_hedge_bot.position_monitor import render_position_monitor_status
 from polymarket_hedge_bot.positions import render_position_risk_summary, render_wallet_positions, wallet_from_text
 from polymarket_hedge_bot.probability import touch_probability, years_until
 from polymarket_hedge_bot.quality import calculate_quality
@@ -756,6 +757,8 @@ def handle_text_command(text: str) -> TelegramResponse:
             reply_markup=scanner_menu_keyboard(),
             html=True,
         )
+    if text in {"/fill_monitor", "/position_monitor"}:
+        return TelegramResponse(render_position_monitor_status(), reply_markup=positions_menu_keyboard(), html=True)
     if text == "/last_skips":
         return TelegramResponse(render_last_skips(), reply_markup=skips_menu_keyboard(), html=True)
     if text == "/review_skips":

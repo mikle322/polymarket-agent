@@ -4,6 +4,7 @@ import threading
 import time
 
 from polymarket_hedge_bot import scanner
+from polymarket_hedge_bot.position_monitor import run_position_monitor_loop
 from polymarket_hedge_bot.telegram_bot import TelegramBot
 from polymarket_hedge_bot.utils import load_dotenv, safe_print
 
@@ -21,6 +22,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not listen for Telegram commands, but keep scanner alerts enabled.",
     )
     parser.add_argument("--telegram-only", action="store_true", help="Run only Telegram command listener, without scanner.")
+    parser.add_argument("--position-monitor", action="store_true", help="Notify when public Polymarket positions appear or increase.")
+    parser.add_argument("--position-monitor-min", type=float, default=1.0, help="Polymarket position monitor interval in minutes.")
     return parser
 
 
@@ -50,6 +53,20 @@ def start_telegram_thread(bot: TelegramBot, stop_event: threading.Event) -> thre
     return thread
 
 
+def start_position_monitor_thread(
+    bot: TelegramBot,
+    chat_id: str,
+    interval_seconds: int,
+    stop_event: threading.Event,
+) -> threading.Thread:
+    def run() -> None:
+        run_position_monitor_loop(bot, chat_id, interval_seconds=interval_seconds, stop_event=stop_event)
+
+    thread = threading.Thread(target=run, name="polymarket-position-monitor", daemon=True)
+    thread.start()
+    return thread
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
@@ -57,6 +74,14 @@ def main() -> int:
 
     bot, chat_id = build_bot(args)
     stop_event = threading.Event()
+    if args.position_monitor and bot is not None and chat_id is not None:
+        start_position_monitor_thread(
+            bot,
+            chat_id,
+            interval_seconds=max(10, int(args.position_monitor_min * 60)),
+            stop_event=stop_event,
+        )
+        safe_print("Polymarket position monitor thread started")
 
     if args.telegram_only:
         if bot is None:
