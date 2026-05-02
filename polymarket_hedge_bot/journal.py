@@ -178,6 +178,37 @@ def update_futures_leg(
     )
 
 
+def clear_futures_leg(trade_id: str) -> TradeRecord:
+    return remove_trade_payload_keys(
+        trade_id,
+        {
+            "futures_side",
+            "futures_size_btc",
+            "futures_entry_price",
+            "futures_exit_price",
+            "futures_pnl",
+        },
+    )
+
+
+def remove_trade_payload_keys(trade_id: str, keys: set[str]) -> TradeRecord:
+    with _JOURNAL_LOCK:
+        trades = load_trades()
+        updated: list[TradeRecord] = []
+        target: TradeRecord | None = None
+        for trade in trades:
+            if trade.trade_id != trade_id:
+                updated.append(trade)
+                continue
+            payload = {key: value for key, value in dict(trade.payload).items() if key not in keys}
+            target = replace(trade, payload=payload)
+            updated.append(target)
+        if target is None:
+            raise ValueError(f"trade {trade_id} was not found")
+        save_trades(updated)
+        return target
+
+
 def update_trade_payload(trade_id: str, payload_updates: dict) -> TradeRecord:
     with _JOURNAL_LOCK:
         trades = load_trades()

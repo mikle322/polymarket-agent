@@ -19,6 +19,7 @@ from polymarket_hedge_bot.edge import calculate_edge
 from polymarket_hedge_bot.formatting import money, positive_result_probability
 from polymarket_hedge_bot.hedge import calculate_futures_hedge
 from polymarket_hedge_bot.journal import (
+    clear_futures_leg,
     close_trade,
     create_manual_trade,
     create_signal,
@@ -755,6 +756,7 @@ def journal_add_menu_keyboard() -> dict[str, Any]:
             [{"text": "🆕 Створити угоду", "callback_data": "menu:journal_add_trade"}],
             [{"text": "🟦 Додати Polymarket", "callback_data": "menu:journal_add_pm"}],
             [{"text": "📉 Додати Futures", "callback_data": "menu:journal_add_futures"}],
+            [{"text": "🧹 Видалити Futures", "callback_data": "menu:journal_clear_futures"}],
             [{"text": "✅ Закрити угоду", "callback_data": "menu:journal_add_close"}],
             [{"text": "⬅️ Журнал", "callback_data": "menu:journal"}],
         ]
@@ -954,6 +956,64 @@ def handle_polymarket_position_callback(data: str) -> TelegramResponse:
     )
 
 
+def clear_futures_keyboard(trades: list[Any]) -> dict[str, Any]:
+    buttons = []
+    for trade in trades[:10]:
+        label = f"🧹 {trade.trade_id}"
+        buttons.append([{"text": label, "callback_data": f"clearfut:{trade.trade_id}"}])
+    buttons.append([{"text": "⬅️ Добавити", "callback_data": "menu:journal_add"}])
+    return {"inline_keyboard": buttons}
+
+
+def render_clear_futures_picker(limit: int = 10) -> TelegramResponse:
+    from polymarket_hedge_bot.journal import load_trades
+
+    trades = [
+        trade
+        for trade in reversed(load_trades())
+        if (trade.payload or {}).get("futures_entry_price") is not None
+    ][:limit]
+    if not trades:
+        return TelegramResponse(
+            "🧹 <b>Видалити Futures</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "У журналі поки немає угод із внесеною futures-ногою.",
+            reply_markup=journal_add_menu_keyboard(),
+            html=True,
+        )
+
+    lines = [
+        "🧹 <b>Видалити Futures</b>",
+        "━━━━━━━━━━━━━━━━",
+        "Обери угоду, з якої треба прибрати futures-ногу. Polymarket-частина залишиться в журналі.",
+    ]
+    for index, trade in enumerate(trades, start=1):
+        payload = trade.payload or {}
+        lines.extend(
+            [
+                "",
+                f"<b>#{index}</b> <code>{html.escape(trade.trade_id)}</code> | {html.escape(trade.status)}",
+                f"• {html.escape(trade.title)}",
+                f"• Futures: {html.escape(str(payload.get('futures_side', '')))} "
+                f"{float(payload.get('futures_size_btc', 0.0)):.6f} BTC @ {money(float(payload.get('futures_entry_price', 0.0)))}",
+            ]
+        )
+    return TelegramResponse("\n".join(lines), reply_markup=clear_futures_keyboard(trades), html=True)
+
+
+def handle_clear_futures_callback(data: str) -> TelegramResponse:
+    trade_id = data.split(":", 1)[1]
+    trade = clear_futures_leg(trade_id)
+    return TelegramResponse(
+        "✅ <b>Futures-ногу видалено</b>\n"
+        "━━━━━━━━━━━━━━━━\n\n"
+        "Тепер можеш внести правильну futures-угоду заново.\n\n"
+        + render_trade_line(trade),
+        reply_markup=journal_menu_keyboard(),
+        html=True,
+    )
+
+
 def polymarket_position_price(position: Any) -> float:
     if isinstance(position, dict):
         return float(position.get("price") or position.get("avgPrice") or position.get("curPrice") or 0.0)
@@ -1092,6 +1152,8 @@ def handle_text_command(text: str) -> TelegramResponse:
         return TelegramResponse(render_pm_fill_command(text), reply_markup=journal_menu_keyboard(), html=True)
     if text.startswith("/futures"):
         return TelegramResponse(render_futures_command(text), reply_markup=journal_menu_keyboard(), html=True)
+    if text.startswith("/clear_futures"):
+        return TelegramResponse(render_clear_futures_command(text), reply_markup=journal_menu_keyboard(), html=True)
     if text.startswith("/positions"):
         return TelegramResponse(
             render_wallet_positions(wallet_from_text(text)),
@@ -1234,6 +1296,8 @@ def handle_menu_callback(data: str) -> TelegramResponse:
             reply_markup=journal_add_menu_keyboard(),
             html=True,
         )
+    if action == "journal_clear_futures":
+        return render_clear_futures_picker()
     if action == "journal_add_close":
         return TelegramResponse(
             "✅ <b>Закрити угоду</b>\n"
@@ -1364,6 +1428,26 @@ def render_futures_command(text: str) -> str:
     return "✅ <b>Futures ногу оновлено</b>\n\n" + render_trade_line(trade)
 
 
+def render_clear_futures_command(text: str) -> str:
+    parser = argparse.ArgumentParser(prog="/clear_futures")
+    parser.add_argument("command")
+    parser.add_argument("trade_id")
+    try:
+        args = parser.parse_args(shlex.split(text))
+        trade = clear_futures_leg(args.trade_id)
+    except SystemExit:
+        return "Формат:\n<code>/clear_futures trade_id</code>"
+    except Exception as exc:
+        return f"⚠️ <b>Не вдалося видалити futures ногу</b>\n\n{html.escape(str(exc))}"
+
+    return (
+        "✅ <b>Futures-ногу видалено</b>\n"
+        "━━━━━━━━━━━━━━━━\n\n"
+        "Тепер можеш внести правильну futures-угоду заново.\n\n"
+        + render_trade_line(trade)
+    )
+
+
 def render_trade_line(trade: Any) -> str:
     payload = trade.payload or {}
     lines = [
@@ -1412,6 +1496,16 @@ def _pretty_handle_callback(self: TelegramBot, callback: dict[str, Any]) -> None
             self.answer_callback(callback_id, f"Помилка: {exc}")
             return
         self.answer_callback(callback_id, "Записано в журнал")
+        self.send_report(chat_id, response)
+        return
+
+    if data.startswith("clearfut:"):
+        try:
+            response = handle_clear_futures_callback(data)
+        except Exception as exc:
+            self.answer_callback(callback_id, f"Помилка: {exc}")
+            return
+        self.answer_callback(callback_id, "Futures видалено")
         self.send_report(chat_id, response)
         return
 
