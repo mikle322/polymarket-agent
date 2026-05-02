@@ -657,7 +657,7 @@ def render_journal_card(limit: int = 10) -> str:
     for trade in trades[-limit:][::-1]:
         icon = "🟢" if trade.status == "OPEN" else "✅"
         leg_total = calculate_total_pnl(trade)
-        pnl = f" | PnL <b>{money(trade.realized_pnl)}</b>" if trade.realized_pnl is not None else f" | legs <b>{money(leg_total)}</b>"
+        pnl = f" | PnL <b>{money(trade.realized_pnl)}</b>" if trade.realized_pnl is not None else f" | результат <b>{money(leg_total)}</b>"
         payload = trade.payload or {}
         pm_line = ""
         if payload.get("pm_price") is not None:
@@ -694,7 +694,7 @@ def render_journal_card(limit: int = 10) -> str:
         if futures_line:
             lines.append(futures_line)
         if payload.get("pm_pnl") is not None or payload.get("futures_pnl") is not None:
-            lines.append(f"• Разом по ногах: <b>{money(leg_total)}</b>")
+            lines.append(f"• Загальний результат: <b>{money(leg_total)}</b>")
     return "\n".join(lines)
 
 
