@@ -948,6 +948,42 @@ def load_polymarket_positions_for_journal(
     return positions, checked_wallets, proxy_wallet
 
 
+def load_polymarket_activities_for_journal(
+    connector: PolymarketDataConnector,
+    wallet: str,
+    limit: int = 200,
+) -> tuple[list[dict[str, Any]], list[str], str | None]:
+    checked_wallets: list[str] = []
+    proxy_wallet: str | None = None
+    try:
+        proxy_wallet = connector.get_proxy_wallet(wallet)
+    except Exception:
+        proxy_wallet = None
+
+    wallets = [item for item in [proxy_wallet, wallet] if item]
+    activities: list[dict[str, Any]] = []
+    seen_wallets: set[str] = set()
+    seen_activities: set[str] = set()
+    for candidate_wallet in wallets:
+        normalized_wallet = candidate_wallet.lower()
+        if normalized_wallet in seen_wallets:
+            continue
+        seen_wallets.add(normalized_wallet)
+        checked_wallets.append(candidate_wallet)
+        for activity in connector.get_activity(candidate_wallet, limit=limit, activity_type="TRADE"):
+            key = str(
+                activity.get("transactionHash")
+                or activity.get("txHash")
+                or activity.get("orderHash")
+                or f"{activity.get('conditionId')}:{activity.get('asset')}:{activity.get('side')}:{activity.get('timestamp')}"
+            )
+            if key in seen_activities:
+                continue
+            seen_activities.add(key)
+            activities.append(activity)
+    return activities, checked_wallets, proxy_wallet
+
+
 def sync_journal_polymarket_response() -> TelegramResponse:
     from polymarket_hedge_bot.journal import load_trades
 
@@ -963,6 +999,9 @@ def sync_journal_polymarket_response() -> TelegramResponse:
     connector = PolymarketDataConnector(timeout=8)
     try:
         positions, checked_wallets, proxy_wallet = load_polymarket_positions_for_journal(connector, wallet)
+        activities, activity_wallets, activity_proxy_wallet = load_polymarket_activities_for_journal(connector, wallet)
+        checked_wallets = list(dict.fromkeys([*checked_wallets, *activity_wallets]))
+        proxy_wallet = proxy_wallet or activity_proxy_wallet
     except Exception as exc:
         return TelegramResponse(
             "⚠️ <b>Не вдалося оновити PM PnL</b>\n\n"
@@ -976,6 +1015,22 @@ def sync_journal_polymarket_response() -> TelegramResponse:
     for trade in load_trades():
         payload = trade.payload or {}
         if payload.get("pm_price") is None:
+            continue
+        close_activity = find_matching_polymarket_close_activity(trade, activities)
+        if close_activity is not None:
+            proceeds = polymarket_activity_value(close_activity)
+            pm_cost = float(payload.get("pm_cost") or 0.0)
+            update_trade_payload(
+                trade.trade_id,
+                {
+                    "pm_slug": polymarket_activity_slug(close_activity),
+                    "pm_current_value": proceeds,
+                    "pm_pnl": proceeds - pm_cost,
+                    "pm_status": f"CLOSED SELL {polymarket_activity_price(close_activity):.3f}",
+                    "pm_closed_value": proceeds,
+                },
+            )
+            updated += 1
             continue
         position = find_matching_polymarket_position(trade, positions)
         if position is None:
@@ -1031,6 +1086,74 @@ def find_matching_polymarket_position(trade: Any, positions: list[Any]) -> Any |
             best_score = score
             best_position = position
     return best_position if best_score >= 3 else None
+
+
+def find_matching_polymarket_close_activity(trade: Any, activities: list[dict[str, Any]]) -> dict[str, Any] | None:
+    payload = trade.payload or {}
+    trade_slug = normalize_match_text(str(payload.get("pm_slug") or ""))
+    trade_title = normalize_match_text(str(trade.title or ""))
+    trade_outcome = normalize_match_text(str(payload.get("pm_outcome") or ""))
+
+    matches: list[tuple[int, float, dict[str, Any]]] = []
+    for activity in activities:
+        if polymarket_activity_side(activity) != "SELL":
+            continue
+        value = polymarket_activity_value(activity)
+        if value <= 0:
+            continue
+        activity_slug = normalize_match_text(polymarket_activity_slug(activity))
+        activity_title = normalize_match_text(polymarket_activity_title(activity))
+        activity_outcome = normalize_match_text(polymarket_activity_outcome(activity))
+        score = 0
+        if trade_slug and trade_slug == activity_slug:
+            score += 6
+        if trade_title and trade_title == activity_title:
+            score += 5
+        elif trade_title and (trade_title in activity_title or activity_title in trade_title):
+            score += 3
+        if trade_outcome and trade_outcome == activity_outcome:
+            score += 2
+        if score >= 3:
+            matches.append((score, polymarket_activity_timestamp(activity), activity))
+
+    if not matches:
+        return None
+    matches.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return matches[0][2]
+
+
+def polymarket_activity_side(activity: dict[str, Any]) -> str:
+    return str(activity.get("side") or activity.get("transactionType") or activity.get("type") or "").upper()
+
+
+def polymarket_activity_value(activity: dict[str, Any]) -> float:
+    for key in ("usdcSize", "value", "cashAmount", "collateralAmount", "quoteAmount", "proceeds"):
+        value = activity.get(key)
+        if value is not None:
+            return abs(float(value))
+    price = polymarket_activity_price(activity)
+    size = float(activity.get("size") or activity.get("shares") or 0.0)
+    return abs(price * size)
+
+
+def polymarket_activity_price(activity: dict[str, Any]) -> float:
+    return float(activity.get("price") or activity.get("avgPrice") or 0.0)
+
+
+def polymarket_activity_timestamp(activity: dict[str, Any]) -> float:
+    return float(activity.get("timestamp") or activity.get("createdAt") or activity.get("updatedAt") or 0.0)
+
+
+def polymarket_activity_outcome(activity: dict[str, Any]) -> str:
+    return str(activity.get("outcome") or activity.get("outcomeName") or "YES")
+
+
+def polymarket_activity_title(activity: dict[str, Any]) -> str:
+    return str(activity.get("title") or activity.get("marketTitle") or activity.get("slug") or activity.get("conditionId") or "")
+
+
+def polymarket_activity_slug(activity: dict[str, Any]) -> str:
+    return str(activity.get("slug") or activity.get("marketSlug") or activity.get("conditionId") or "")
 
 
 def normalize_match_text(value: str) -> str:
