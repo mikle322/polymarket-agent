@@ -1,6 +1,6 @@
 import json
 import threading
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -89,6 +89,90 @@ def record_entry(signal_id: str) -> TradeRecord:
         return trade
 
 
+def create_manual_trade(title: str, note: str | None = None) -> TradeRecord:
+    with _JOURNAL_LOCK:
+        ensure_dirs()
+        trade = TradeRecord(
+            trade_id=uuid4().hex[:10],
+            signal_id="manual",
+            entered_at=now_iso(),
+            status="OPEN",
+            title=title,
+            decision="MANUAL",
+            positive_probability=0.0,
+            payload={"note": note} if note else {},
+        )
+        append_trade(trade)
+        return trade
+
+
+def update_pm_leg(
+    trade_id: str,
+    side: str,
+    outcome: str,
+    price: float,
+    shares: float,
+    cost: float | None = None,
+    pnl: float | None = None,
+) -> TradeRecord:
+    return update_trade_payload(
+        trade_id,
+        {
+            "pm_side": side,
+            "pm_outcome": outcome,
+            "pm_price": price,
+            "pm_shares": shares,
+            "pm_cost": cost if cost is not None else price * shares,
+            "pm_pnl": pnl,
+        },
+    )
+
+
+def update_futures_leg(
+    trade_id: str,
+    side: str,
+    size_btc: float,
+    entry_price: float,
+    exit_price: float | None = None,
+    pnl: float | None = None,
+) -> TradeRecord:
+    calculated_pnl = pnl
+    if calculated_pnl is None and exit_price is not None:
+        if side.upper() == "LONG":
+            calculated_pnl = (exit_price - entry_price) * size_btc
+        elif side.upper() == "SHORT":
+            calculated_pnl = (entry_price - exit_price) * size_btc
+    return update_trade_payload(
+        trade_id,
+        {
+            "futures_side": side.upper(),
+            "futures_size_btc": size_btc,
+            "futures_entry_price": entry_price,
+            "futures_exit_price": exit_price,
+            "futures_pnl": calculated_pnl,
+        },
+    )
+
+
+def update_trade_payload(trade_id: str, payload_updates: dict) -> TradeRecord:
+    with _JOURNAL_LOCK:
+        trades = load_trades()
+        updated: list[TradeRecord] = []
+        target: TradeRecord | None = None
+        for trade in trades:
+            if trade.trade_id != trade_id:
+                updated.append(trade)
+                continue
+            payload = dict(trade.payload)
+            payload.update({key: value for key, value in payload_updates.items() if value is not None})
+            target = replace(trade, payload=payload)
+            updated.append(target)
+        if target is None:
+            raise ValueError(f"trade {trade_id} was not found")
+        save_trades(updated)
+        return target
+
+
 def append_trade(trade: TradeRecord) -> None:
     with _JOURNAL_LOCK:
         ensure_dirs()
@@ -116,7 +200,7 @@ def save_trades(trades: list[TradeRecord]) -> None:
                 handle.write(json.dumps(asdict(trade), ensure_ascii=False) + "\n")
 
 
-def close_trade(trade_id: str, realized_pnl: float, note: str | None = None) -> TradeRecord:
+def close_trade(trade_id: str, realized_pnl: float | None = None, note: str | None = None) -> TradeRecord:
     with _JOURNAL_LOCK:
         trades = load_trades()
         updated: list[TradeRecord] = []
@@ -127,6 +211,7 @@ def close_trade(trade_id: str, realized_pnl: float, note: str | None = None) -> 
                 updated.append(trade)
                 continue
 
+            pnl = realized_pnl if realized_pnl is not None else calculate_total_pnl(trade)
             closed_trade = TradeRecord(
                 trade_id=trade.trade_id,
                 signal_id=trade.signal_id,
@@ -137,7 +222,7 @@ def close_trade(trade_id: str, realized_pnl: float, note: str | None = None) -> 
                 positive_probability=trade.positive_probability,
                 payload=trade.payload,
                 closed_at=now_iso(),
-                realized_pnl=realized_pnl,
+                realized_pnl=pnl,
                 note=note,
             )
             updated.append(closed_trade)
@@ -147,6 +232,19 @@ def close_trade(trade_id: str, realized_pnl: float, note: str | None = None) -> 
 
         save_trades(updated)
         return closed_trade
+
+
+def calculate_total_pnl(trade: TradeRecord) -> float:
+    payload = trade.payload or {}
+    total = 0.0
+    found = False
+    for key in ("pm_pnl", "futures_pnl"):
+        value = payload.get(key)
+        if value is None:
+            continue
+        total += float(value)
+        found = True
+    return total if found else 0.0
 
 
 def journal_summary(limit: int = 10) -> str:

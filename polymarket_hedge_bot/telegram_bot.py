@@ -17,7 +17,15 @@ from polymarket_hedge_bot.costs import calculate_costs
 from polymarket_hedge_bot.edge import calculate_edge
 from polymarket_hedge_bot.formatting import money, positive_result_probability
 from polymarket_hedge_bot.hedge import calculate_futures_hedge
-from polymarket_hedge_bot.journal import close_trade, create_signal, journal_summary, record_entry
+from polymarket_hedge_bot.journal import (
+    close_trade,
+    create_manual_trade,
+    create_signal,
+    journal_summary,
+    record_entry,
+    update_futures_leg,
+    update_pm_leg,
+)
 from polymarket_hedge_bot.liquidity import check_basic_liquidity
 from polymarket_hedge_bot.opportunity_history import render_history_summary
 from polymarket_hedge_bot.paper_trading import render_paper_review_summary, render_paper_summary, review_due_paper_trades
@@ -639,6 +647,27 @@ def render_journal_card(limit: int = 10) -> str:
     for trade in trades[-limit:][::-1]:
         icon = "🟢" if trade.status == "OPEN" else "✅"
         pnl = "" if trade.realized_pnl is None else f" | PnL <b>{money(trade.realized_pnl)}</b>"
+        payload = trade.payload or {}
+        pm_line = ""
+        if payload.get("pm_price") is not None:
+            pm_line = (
+                f"• PM: {html.escape(str(payload.get('pm_side', 'BUY')))} "
+                f"{html.escape(str(payload.get('pm_outcome', '')))} "
+                f"{float(payload.get('pm_shares', 0.0)):.2f} @ {float(payload.get('pm_price', 0.0)):.3f} "
+                f"| cost {money(float(payload.get('pm_cost', 0.0)))}"
+            )
+            if payload.get("pm_pnl") is not None:
+                pm_line += f" | PnL {money(float(payload.get('pm_pnl', 0.0)))}"
+        futures_line = ""
+        if payload.get("futures_entry_price") is not None:
+            futures_line = (
+                f"• Futures: {html.escape(str(payload.get('futures_side', '')))} "
+                f"{float(payload.get('futures_size_btc', 0.0)):.6f} BTC @ {money(float(payload.get('futures_entry_price', 0.0)))}"
+            )
+            if payload.get("futures_exit_price") is not None:
+                futures_line += f" → {money(float(payload.get('futures_exit_price', 0.0)))}"
+            if payload.get("futures_pnl") is not None:
+                futures_line += f" | PnL {money(float(payload.get('futures_pnl', 0.0)))}"
         lines.extend(
             [
                 "",
@@ -647,6 +676,10 @@ def render_journal_card(limit: int = 10) -> str:
                 f"• {html.escape(trade.title)}",
             ]
         )
+        if pm_line:
+            lines.append(pm_line)
+        if futures_line:
+            lines.append(futures_line)
     return "\n".join(lines)
 
 
@@ -765,6 +798,12 @@ def handle_text_command(text: str) -> TelegramResponse:
         return TelegramResponse(review_skips(), reply_markup=skips_menu_keyboard(), html=True)
     if text == "/journal":
         return TelegramResponse(render_journal_card(), reply_markup=journal_menu_keyboard(), html=True)
+    if text.startswith("/trade"):
+        return TelegramResponse(render_trade_command(text), reply_markup=journal_menu_keyboard(), html=True)
+    if text.startswith("/pm_fill"):
+        return TelegramResponse(render_pm_fill_command(text), reply_markup=journal_menu_keyboard(), html=True)
+    if text.startswith("/futures"):
+        return TelegramResponse(render_futures_command(text), reply_markup=journal_menu_keyboard(), html=True)
     if text.startswith("/positions"):
         return TelegramResponse(
             render_wallet_positions(wallet_from_text(text)),
@@ -899,7 +938,7 @@ def render_close_command(text: str) -> str:
     parser = argparse.ArgumentParser(prog="/close")
     parser.add_argument("command")
     parser.add_argument("trade_id")
-    parser.add_argument("--pnl", type=float, required=True)
+    parser.add_argument("--pnl", type=float)
     parser.add_argument("--note")
 
     try:
@@ -921,6 +960,102 @@ def render_close_command(text: str) -> str:
         f"• Realized PnL: <b>{money(trade.realized_pnl or 0.0)}</b>\n\n"
         f"{render_journal_card()}"
     )
+
+
+def render_trade_command(text: str) -> str:
+    parser = argparse.ArgumentParser(prog="/trade")
+    parser.add_argument("command")
+    parser.add_argument("--title", required=True)
+    parser.add_argument("--note")
+    try:
+        args = parser.parse_args(shlex.split(text))
+        trade = create_manual_trade(args.title, args.note)
+    except SystemExit:
+        return "Формат:\n<code>/trade --title \"BTC 85k May hedge\" --note \"optional\"</code>"
+    except Exception as exc:
+        return f"⚠️ <b>Не вдалося створити угоду</b>\n\n{html.escape(str(exc))}"
+
+    return (
+        "✅ <b>Угоду створено</b>\n"
+        "━━━━━━━━━━━━━━━━\n\n"
+        f"• Trade ID: <code>{html.escape(trade.trade_id)}</code>\n"
+        f"• Назва: {html.escape(trade.title)}\n\n"
+        "Далі можна додати ноги:\n"
+        f"<code>/pm_fill {html.escape(trade.trade_id)} --side BUY --outcome YES --price 0.47 --shares 638.3 --cost 300</code>\n"
+        f"<code>/futures {html.escape(trade.trade_id)} --side SHORT --size-btc 0.0375 --entry 78000</code>"
+    )
+
+
+def render_pm_fill_command(text: str) -> str:
+    parser = argparse.ArgumentParser(prog="/pm_fill")
+    parser.add_argument("command")
+    parser.add_argument("trade_id")
+    parser.add_argument("--side", default="BUY")
+    parser.add_argument("--outcome", required=True)
+    parser.add_argument("--price", type=float, required=True)
+    parser.add_argument("--shares", type=float, required=True)
+    parser.add_argument("--cost", type=float)
+    parser.add_argument("--pnl", type=float)
+    try:
+        args = parser.parse_args(shlex.split(text))
+        trade = update_pm_leg(args.trade_id, args.side, args.outcome, args.price, args.shares, args.cost, args.pnl)
+    except SystemExit:
+        return (
+            "Формат:\n"
+            "<code>/pm_fill trade_id --side BUY --outcome YES --price 0.47 --shares 638.3 --cost 300 --pnl 42.5</code>"
+        )
+    except Exception as exc:
+        return f"⚠️ <b>Не вдалося оновити Polymarket ногу</b>\n\n{html.escape(str(exc))}"
+
+    return "✅ <b>Polymarket ногу оновлено</b>\n\n" + render_trade_line(trade)
+
+
+def render_futures_command(text: str) -> str:
+    parser = argparse.ArgumentParser(prog="/futures")
+    parser.add_argument("command")
+    parser.add_argument("trade_id")
+    parser.add_argument("--side", choices=["LONG", "SHORT", "long", "short"], required=True)
+    parser.add_argument("--size-btc", type=float, required=True)
+    parser.add_argument("--entry", type=float, required=True)
+    parser.add_argument("--exit", type=float)
+    parser.add_argument("--pnl", type=float)
+    try:
+        args = parser.parse_args(shlex.split(text))
+        trade = update_futures_leg(args.trade_id, args.side, args.size_btc, args.entry, args.exit, args.pnl)
+    except SystemExit:
+        return (
+            "Формат:\n"
+            "<code>/futures trade_id --side SHORT --size-btc 0.0375 --entry 78000 --exit 70000</code>"
+        )
+    except Exception as exc:
+        return f"⚠️ <b>Не вдалося оновити futures ногу</b>\n\n{html.escape(str(exc))}"
+
+    return "✅ <b>Futures ногу оновлено</b>\n\n" + render_trade_line(trade)
+
+
+def render_trade_line(trade: Any) -> str:
+    payload = trade.payload or {}
+    lines = [
+        f"• Trade ID: <code>{html.escape(trade.trade_id)}</code>",
+        f"• Ринок: {html.escape(trade.title)}",
+    ]
+    if payload.get("pm_price") is not None:
+        lines.append(
+            f"• PM: {html.escape(str(payload.get('pm_side', 'BUY')))} {html.escape(str(payload.get('pm_outcome', '')))} "
+            f"{float(payload.get('pm_shares', 0.0)):.2f} @ {float(payload.get('pm_price', 0.0)):.3f} "
+            f"| cost {money(float(payload.get('pm_cost', 0.0)))}"
+        )
+    if payload.get("futures_entry_price") is not None:
+        futures = (
+            f"• Futures: {html.escape(str(payload.get('futures_side', '')))} "
+            f"{float(payload.get('futures_size_btc', 0.0)):.6f} BTC @ {money(float(payload.get('futures_entry_price', 0.0)))}"
+        )
+        if payload.get("futures_exit_price") is not None:
+            futures += f" → {money(float(payload.get('futures_exit_price', 0.0)))}"
+        if payload.get("futures_pnl") is not None:
+            futures += f" | PnL {money(float(payload.get('futures_pnl', 0.0)))}"
+        lines.append(futures)
+    return "\n".join(lines)
 
 
 def _pretty_handle_callback(self: TelegramBot, callback: dict[str, Any]) -> None:
