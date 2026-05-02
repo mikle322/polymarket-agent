@@ -128,6 +128,30 @@ def update_pm_leg(
     )
 
 
+def record_polymarket_position(
+    title: str,
+    outcome: str,
+    price: float,
+    shares: float,
+    cost: float,
+    pnl: float | None = None,
+    trade_id: str | None = None,
+) -> TradeRecord:
+    with _JOURNAL_LOCK:
+        target_id = trade_id or latest_open_trade_id()
+    if target_id is None:
+        trade = create_manual_trade(title)
+        target_id = trade.trade_id
+    return update_pm_leg(target_id, "BUY", outcome, price, shares, cost, pnl)
+
+
+def latest_open_trade_id() -> str | None:
+    for trade in reversed(load_trades()):
+        if trade.status == "OPEN":
+            return trade.trade_id
+    return None
+
+
 def update_futures_leg(
     trade_id: str,
     side: str,

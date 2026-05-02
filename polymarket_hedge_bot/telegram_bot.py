@@ -7,6 +7,7 @@ import shlex
 import time
 from dataclasses import dataclass
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -22,6 +23,7 @@ from polymarket_hedge_bot.journal import (
     create_manual_trade,
     create_signal,
     journal_summary,
+    record_polymarket_position,
     record_entry,
     update_futures_leg,
     update_pm_leg,
@@ -30,6 +32,7 @@ from polymarket_hedge_bot.liquidity import check_basic_liquidity
 from polymarket_hedge_bot.opportunity_history import render_history_summary
 from polymarket_hedge_bot.paper_trading import render_paper_review_summary, render_paper_summary, review_due_paper_trades
 from polymarket_hedge_bot.position_monitor import render_position_monitor_status
+from polymarket_hedge_bot.connectors.polymarket_data import PolymarketDataConnector
 from polymarket_hedge_bot.positions import render_position_risk_summary, render_wallet_positions, wallet_from_text
 from polymarket_hedge_bot.probability import touch_probability, years_until
 from polymarket_hedge_bot.quality import calculate_quality
@@ -70,6 +73,9 @@ HELP_TEXT = """Polymarket Hedge Bot
 
 Терміни типу WATCH, SKIP, ENTER, NO, LONG, SHORT, TP, SL, VWAP, funding, edge залишені як трейдинговий сленг.
 """
+
+
+JOURNAL_PM_POSITIONS_PATH = Path("data") / "journal_polymarket_positions.json"
 
 
 @dataclass(frozen=True)
@@ -755,6 +761,275 @@ def journal_add_menu_keyboard() -> dict[str, Any]:
     }
 
 
+def journal_polymarket_positions_keyboard(positions: list[Any]) -> dict[str, Any]:
+    buttons = []
+    for index, _position in enumerate(positions[:5], start=1):
+        buttons.append([{"text": f"➕ Додати #{index}", "callback_data": f"pmpos:{index - 1}"}])
+    buttons.append([{"text": "⬅️ Добавити", "callback_data": "menu:journal_add"}])
+    return {"inline_keyboard": buttons}
+
+
+def render_journal_add_polymarket_positions(limit: int = 5, timeout: float = 8.0) -> TelegramResponse:
+    wallet = os.environ.get("POLYMARKET_WALLET_ADDRESS") or os.environ.get("POLYMARKET_PROXY_WALLET")
+    if not wallet:
+        return TelegramResponse(
+            "⚠️ <b>Не бачу Polymarket wallet</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "Додай у <code>.env</code> публічну адресу:\n"
+            "<code>POLYMARKET_WALLET_ADDRESS=0x...</code>\n\n"
+            "Private key для журналу не потрібен.",
+            reply_markup=journal_add_menu_keyboard(),
+            html=True,
+        )
+
+    connector = PolymarketDataConnector(timeout=timeout)
+    try:
+        positions, checked_wallets, proxy_wallet = load_recent_polymarket_positions(connector, wallet, limit)
+    except Exception as exc:
+        return TelegramResponse(
+            "⚠️ <b>Не вдалося підтягнути угоди Polymarket</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            f"Причина: <code>{html.escape(str(exc))}</code>",
+            reply_markup=journal_add_menu_keyboard(),
+            html=True,
+        )
+
+    save_journal_pm_positions(positions)
+    if not positions:
+        checked = ", ".join(short_wallet(item) for item in checked_wallets) if checked_wallets else short_wallet(wallet)
+        return TelegramResponse(
+            "🟦 <b>Додати Polymarket</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            f"Перевірив wallet: <code>{html.escape(checked)}</code>\n"
+            "Останніх позицій не знайдено. Якщо угоди точно є, найімовірніше потрібна proxy wallet адреса з профілю Polymarket.",
+            reply_markup=journal_add_menu_keyboard(),
+            html=True,
+        )
+
+    lines = [
+        "🟦 <b>Додати Polymarket</b>",
+        "━━━━━━━━━━━━━━━━",
+        f"Wallet: <code>{html.escape(short_wallet(wallet))}</code>",
+        f"Checked: <code>{html.escape(', '.join(short_wallet(item) for item in checked_wallets))}</code>",
+    ]
+    if proxy_wallet:
+        lines.append(f"Proxy: <code>{html.escape(short_wallet(proxy_wallet))}</code>")
+    lines.extend(["", f"Останні {len(positions)} Polymarket fills/позицій. Натисни кнопку під потрібною, і я внесу її в журнал."])
+
+    for index, position in enumerate(positions, start=1):
+        price = polymarket_position_price(position)
+        cost = polymarket_position_cost(position)
+        pnl = polymarket_position_pnl(position)
+        status = polymarket_position_status(position)
+        lines.extend(
+            [
+                "",
+                f"<b>#{index}</b> {html.escape(status)} | {html.escape(polymarket_position_outcome(position))} "
+                f"| {polymarket_position_size(position):.2f} @ {price:.3f}",
+                f"<code>{html.escape(polymarket_position_slug(position))}</code>",
+                f"Cost: <b>{money(cost)}</b> | Value: <b>{money(polymarket_position_current_value(position))}</b> | PnL: <b>{money(pnl)}</b>",
+            ]
+        )
+
+    return TelegramResponse(
+        "\n".join(lines),
+        reply_markup=journal_polymarket_positions_keyboard(positions),
+        html=True,
+    )
+
+
+def load_recent_polymarket_positions(
+    connector: PolymarketDataConnector,
+    wallet: str,
+    limit: int,
+) -> tuple[list[Any], list[str], str | None]:
+    checked_wallets: list[str] = []
+    proxy_wallet: str | None = None
+    try:
+        proxy_wallet = connector.get_proxy_wallet(wallet)
+    except Exception:
+        proxy_wallet = None
+
+    wallets = [item for item in [proxy_wallet, wallet] if item]
+    seen_wallets: set[str] = set()
+    all_positions: list[Any] = []
+    seen_positions: set[str] = set()
+    for candidate_wallet in wallets:
+        normalized_wallet = candidate_wallet.lower()
+        if normalized_wallet in seen_wallets:
+            continue
+        seen_wallets.add(normalized_wallet)
+        checked_wallets.append(candidate_wallet)
+        try:
+            activities = connector.get_activity(candidate_wallet, limit=max(limit, 25), activity_type="TRADE")
+        except Exception:
+            activities = []
+        for activity in activities:
+            key = str(
+                activity.get("transactionHash")
+                or activity.get("txHash")
+                or activity.get("orderHash")
+                or activity.get("asset")
+                or f"{activity.get('conditionId')}:{activity.get('outcome')}:{activity.get('timestamp')}"
+            )
+            if key in seen_positions:
+                continue
+            seen_positions.add(key)
+            all_positions.append(activity)
+
+    if all_positions:
+        all_positions.sort(key=polymarket_position_sort_value, reverse=True)
+        return all_positions[:limit], checked_wallets, proxy_wallet
+
+    for candidate_wallet in wallets:
+        positions = connector.get_positions(
+            candidate_wallet,
+            limit=max(limit, 25),
+            size_threshold=0.0,
+            sort_by="CURRENT",
+            sort_direction="DESC",
+        )
+        for position in positions:
+            key = position.asset or f"{position.condition_id}:{position.outcome_index}"
+            if key in seen_positions:
+                continue
+            seen_positions.add(key)
+            all_positions.append(position)
+
+    all_positions.sort(key=polymarket_position_sort_value, reverse=True)
+    return all_positions[:limit], checked_wallets, proxy_wallet
+
+
+def save_journal_pm_positions(positions: list[Any]) -> None:
+    JOURNAL_PM_POSITIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = [serialize_polymarket_position(position) for position in positions[:5]]
+    JOURNAL_PM_POSITIONS_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_journal_pm_position(index: int) -> dict[str, Any]:
+    if not JOURNAL_PM_POSITIONS_PATH.exists():
+        raise ValueError("список Polymarket позицій застарів. Натисни 'Додати Polymarket' ще раз")
+    positions = json.loads(JOURNAL_PM_POSITIONS_PATH.read_text(encoding="utf-8"))
+    if index < 0 or index >= len(positions):
+        raise ValueError("позицію не знайдено. Онови список і спробуй ще раз")
+    return positions[index]
+
+
+def serialize_polymarket_position(position: Any) -> dict[str, Any]:
+    price = polymarket_position_price(position)
+    cost = polymarket_position_cost(position)
+    pnl = polymarket_position_pnl(position)
+    return {
+        "title": polymarket_position_title(position),
+        "slug": polymarket_position_slug(position),
+        "outcome": polymarket_position_outcome(position),
+        "price": price,
+        "shares": polymarket_position_size(position),
+        "cost": cost,
+        "pnl": pnl,
+        "current_value": polymarket_position_current_value(position),
+        "status": polymarket_position_status(position),
+    }
+
+
+def handle_polymarket_position_callback(data: str) -> TelegramResponse:
+    index = int(data.split(":", 1)[1])
+    position = load_journal_pm_position(index)
+    trade = record_polymarket_position(
+        title=str(position.get("title") or position.get("slug") or "Polymarket position"),
+        outcome=str(position.get("outcome") or "YES"),
+        price=float(position.get("price") or 0.0),
+        shares=float(position.get("shares") or 0.0),
+        cost=float(position.get("cost") or 0.0),
+        pnl=float(position.get("pnl") or 0.0),
+    )
+    return TelegramResponse(
+        "✅ <b>Polymarket позицію додано в журнал</b>\n"
+        "━━━━━━━━━━━━━━━━\n\n"
+        f"• Джерело: <code>{html.escape(str(position.get('slug') or position.get('title') or 'Polymarket'))}</code>\n"
+        f"• Статус на Polymarket: <b>{html.escape(str(position.get('status') or ''))}</b>\n\n"
+        + render_trade_line(trade),
+        reply_markup=journal_menu_keyboard(),
+        html=True,
+    )
+
+
+def polymarket_position_price(position: Any) -> float:
+    if isinstance(position, dict):
+        return float(position.get("price") or position.get("avgPrice") or position.get("curPrice") or 0.0)
+    return float(position.avg_price or position.cur_price or 0.0)
+
+
+def polymarket_position_cost(position: Any) -> float:
+    if isinstance(position, dict):
+        explicit_cost = position.get("usdcSize") or position.get("amount") or position.get("initialValue")
+        return float(explicit_cost or (polymarket_position_price(position) * polymarket_position_size(position)))
+    return float(position.initial_value or (polymarket_position_price(position) * position.size))
+
+
+def polymarket_position_pnl(position: Any) -> float:
+    if isinstance(position, dict):
+        return float(position.get("realizedPnl") or position.get("cashPnl") or position.get("pnl") or 0.0)
+    if position.current_value > 0:
+        return float(position.cash_pnl)
+    return float(position.realized_pnl or position.cash_pnl or 0.0)
+
+
+def polymarket_position_sort_value(position: Any) -> float:
+    if isinstance(position, dict):
+        return float(position.get("timestamp") or position.get("createdAt") or position.get("updatedAt") or 0.0)
+    return max(float(position.current_value or 0.0), float(position.initial_value or 0.0), float(position.total_bought or 0.0))
+
+
+def polymarket_position_status(position: Any) -> str:
+    if isinstance(position, dict):
+        side = str(position.get("side") or position.get("transactionType") or "FILL").upper()
+        return f"FILL {side}" if side != "FILL" else "FILL"
+    if position.redeemable:
+        return "CLOSED/REDEEMABLE"
+    if position.current_value <= 0 and position.realized_pnl != 0:
+        return "CLOSED"
+    if position.size > 0:
+        return "OPEN"
+    return "UNKNOWN"
+
+
+def polymarket_position_size(position: Any) -> float:
+    if isinstance(position, dict):
+        return float(position.get("size") or position.get("shares") or position.get("amount") or 0.0)
+    return float(position.size or 0.0)
+
+
+def polymarket_position_current_value(position: Any) -> float:
+    if isinstance(position, dict):
+        return float(position.get("currentValue") or 0.0)
+    return float(position.current_value or 0.0)
+
+
+def polymarket_position_outcome(position: Any) -> str:
+    if isinstance(position, dict):
+        return str(position.get("outcome") or position.get("outcomeName") or "YES")
+    return str(position.outcome or "YES")
+
+
+def polymarket_position_title(position: Any) -> str:
+    if isinstance(position, dict):
+        return str(position.get("title") or position.get("slug") or position.get("conditionId") or "Polymarket fill")
+    return str(position.title or position.slug or position.condition_id)
+
+
+def polymarket_position_slug(position: Any) -> str:
+    if isinstance(position, dict):
+        return str(position.get("slug") or position.get("marketSlug") or position.get("conditionId") or "polymarket-fill")
+    return str(position.slug or position.condition_id[:12])
+
+
+def short_wallet(wallet: str) -> str:
+    if len(wallet) <= 12:
+        return wallet
+    return f"{wallet[:6]}...{wallet[-4:]}"
+
+
 def positions_menu_keyboard() -> dict[str, Any]:
     return {
         "inline_keyboard": [
@@ -945,16 +1220,7 @@ def handle_menu_callback(data: str) -> TelegramResponse:
             html=True,
         )
     if action == "journal_add_pm":
-        return TelegramResponse(
-            "🟦 <b>Додати Polymarket fill</b>\n"
-            "━━━━━━━━━━━━━━━━\n\n"
-            "Скопіюй шаблон і підстав <code>trade_id</code>, outcome, ціну та shares:\n\n"
-            "<code>/pm_fill trade_id --side BUY --outcome YES --price 0.47 --shares 638.3 --cost 300</code>\n\n"
-            "Коли знаєш результат PM-нога:\n"
-            "<code>/pm_fill trade_id --side BUY --outcome YES --price 0.47 --shares 638.3 --cost 300 --pnl 120</code>",
-            reply_markup=journal_add_menu_keyboard(),
-            html=True,
-        )
+        return render_journal_add_polymarket_positions()
     if action == "journal_add_futures":
         return TelegramResponse(
             "📉 <b>Додати Futures ногу</b>\n"
@@ -1137,6 +1403,16 @@ def _pretty_handle_callback(self: TelegramBot, callback: dict[str, Any]) -> None
     if data.startswith("menu:"):
         self.answer_callback(callback_id, "OK")
         self.send_report(chat_id, handle_menu_callback(data))
+        return
+
+    if data.startswith("pmpos:"):
+        try:
+            response = handle_polymarket_position_callback(data)
+        except Exception as exc:
+            self.answer_callback(callback_id, f"Помилка: {exc}")
+            return
+        self.answer_callback(callback_id, "Записано в журнал")
+        self.send_report(chat_id, response)
         return
 
     if data.startswith("entered:"):

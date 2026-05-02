@@ -72,6 +72,26 @@ class PolymarketDataConnector:
             raise ValueError("unexpected Polymarket positions response")
         return [self._parse_position(item) for item in payload if isinstance(item, dict)]
 
+    def get_activity(
+        self,
+        user: str,
+        limit: int = 100,
+        offset: int = 0,
+        activity_type: str = "TRADE",
+    ) -> list[dict[str, Any]]:
+        payload = self._get_json(
+            f"{self.data_url}/activity",
+            {
+                "user": user,
+                "limit": str(limit),
+                "offset": str(offset),
+                "type": activity_type,
+            },
+        )
+        if not isinstance(payload, list):
+            raise ValueError("unexpected Polymarket activity response")
+        return [item for item in payload if isinstance(item, dict)]
+
     def get_proxy_wallet(self, address: str) -> str | None:
         payload = self._get_json(f"{self.gamma_url}/public-profile", {"address": address})
         if not isinstance(payload, dict):
