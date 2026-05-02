@@ -140,8 +140,8 @@ def estimate_limit_buy_opportunity(
     asks: list[OrderLevel],
     stake: float,
     reference_price: float,
-    min_price: float = 0.40,
-    max_price: float = 0.60,
+    min_price: float = 0.30,
+    max_price: float = 0.65,
     max_spread: float = 0.08,
     tick_size: float = 0.001,
 ) -> LiquidityCheck:

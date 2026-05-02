@@ -114,8 +114,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=60.0,
         help="Ignore markets that settle later than this many days.",
     )
-    parser.add_argument("--min-no-price", type=float, default=0.40)
-    parser.add_argument("--max-no-price", type=float, default=0.60)
+    parser.add_argument("--min-no-price", type=float, default=0.30)
+    parser.add_argument("--max-no-price", type=float, default=0.65)
     parser.add_argument("--no-radar", action="store_true", help="Disable soft radar candidates in scanner status")
     parser.add_argument("--radar-top", type=int, default=5)
     parser.add_argument("--radar-min-score", type=float, default=10.0)
@@ -123,8 +123,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--radar-min-positive-probability", type=float, default=0.50)
     parser.add_argument("--radar-min-hours-to-deadline", type=float, default=2.0 * 24.0)
     parser.add_argument("--radar-max-days-to-deadline", type=float, default=60.0)
-    parser.add_argument("--radar-min-no-price", type=float, default=0.40)
-    parser.add_argument("--radar-max-no-price", type=float, default=0.60)
+    parser.add_argument("--radar-min-no-price", type=float, default=0.30)
+    parser.add_argument("--radar-max-no-price", type=float, default=0.65)
     parser.add_argument("--radar-min-net-upside", type=float, default=0.0)
     parser.add_argument("--radar-min-reward-risk", type=float, default=0.0)
     parser.add_argument("--cooldown-min", type=float, default=30.0)

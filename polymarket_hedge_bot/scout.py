@@ -100,8 +100,8 @@ def evaluate_candidate(
     polymarket: PolymarketConnector | None = None,
     use_live_orderbook: bool = False,
     max_slippage: float | None = 0.03,
-    min_limit_price: float = 0.40,
-    max_limit_price: float = 0.60,
+    min_limit_price: float = 0.30,
+    max_limit_price: float = 0.65,
 ) -> Opportunity:
     t = years_until(candidate.deadline)
     fair_touch = touch_probability(candidate.btc_price, candidate.strike, candidate.iv, t, candidate.direction)
@@ -167,8 +167,8 @@ def scout_candidates(
     max_futures_margin: float | None = None,
     use_live_orderbook: bool = False,
     max_slippage: float | None = 0.03,
-    min_limit_price: float = 0.40,
-    max_limit_price: float = 0.60,
+    min_limit_price: float = 0.30,
+    max_limit_price: float = 0.65,
     max_workers: int = 8,
     polymarket_timeout: float = 5.0,
 ) -> list[Opportunity]:
