@@ -186,7 +186,7 @@ def load_trades() -> list[TradeRecord]:
         if not JOURNAL_PATH.exists():
             return []
         trades: list[TradeRecord] = []
-        for line in JOURNAL_PATH.read_text(encoding="utf-8").splitlines():
+        for line in JOURNAL_PATH.read_text(encoding="utf-8-sig").splitlines():
             if line.strip():
                 trades.append(TradeRecord(**json.loads(line)))
         return trades

@@ -735,9 +735,22 @@ def journal_menu_keyboard() -> dict[str, Any]:
     return {
         "inline_keyboard": [
             [{"text": "🔄 Оновити журнал", "callback_data": "menu:journal"}],
+            [{"text": "➕ Добавити", "callback_data": "menu:journal_add"}],
             [{"text": "💼 Мої позиції Polymarket", "callback_data": "menu:positions"}],
             [{"text": "🧾 Як закрити угоду", "callback_data": "menu:journal_help"}],
             [{"text": "⬅️ Назад", "callback_data": "menu:main"}],
+        ]
+    }
+
+
+def journal_add_menu_keyboard() -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [{"text": "🆕 Створити угоду", "callback_data": "menu:journal_add_trade"}],
+            [{"text": "🟦 Додати Polymarket", "callback_data": "menu:journal_add_pm"}],
+            [{"text": "📉 Додати Futures", "callback_data": "menu:journal_add_futures"}],
+            [{"text": "✅ Закрити угоду", "callback_data": "menu:journal_add_close"}],
+            [{"text": "⬅️ Журнал", "callback_data": "menu:journal"}],
         ]
     }
 
@@ -914,6 +927,58 @@ def handle_menu_callback(data: str) -> TelegramResponse:
         return TelegramResponse(render_skips_bucket("pending"), reply_markup=skips_menu_keyboard(), html=True)
     if action == "journal":
         return TelegramResponse(render_journal_card(), reply_markup=journal_menu_keyboard(), html=True)
+    if action == "journal_add":
+        return TelegramResponse(
+            "➕ <b>Добавити в журнал</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "Обери, що саме хочеш внести. Я покажу готовий шаблон команди, куди треба підставити свої числа.",
+            reply_markup=journal_add_menu_keyboard(),
+            html=True,
+        )
+    if action == "journal_add_trade":
+        return TelegramResponse(
+            "🆕 <b>Створити ручну угоду</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "Скопіюй шаблон і заміни назву:\n\n"
+            "<code>/trade --title \"BTC 85k May hedge\" --note \"optional\"</code>",
+            reply_markup=journal_add_menu_keyboard(),
+            html=True,
+        )
+    if action == "journal_add_pm":
+        return TelegramResponse(
+            "🟦 <b>Додати Polymarket fill</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "Скопіюй шаблон і підстав <code>trade_id</code>, outcome, ціну та shares:\n\n"
+            "<code>/pm_fill trade_id --side BUY --outcome YES --price 0.47 --shares 638.3 --cost 300</code>\n\n"
+            "Коли знаєш результат PM-нога:\n"
+            "<code>/pm_fill trade_id --side BUY --outcome YES --price 0.47 --shares 638.3 --cost 300 --pnl 120</code>",
+            reply_markup=journal_add_menu_keyboard(),
+            html=True,
+        )
+    if action == "journal_add_futures":
+        return TelegramResponse(
+            "📉 <b>Додати Futures ногу</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "Вхід:\n"
+            "<code>/futures trade_id --side SHORT --size-btc 0.0375 --entry 78000</code>\n\n"
+            "Закриття, PnL порахується автоматично:\n"
+            "<code>/futures trade_id --side SHORT --size-btc 0.0375 --entry 78000 --exit 70000</code>\n\n"
+            "Або вручну:\n"
+            "<code>/futures trade_id --side SHORT --size-btc 0.0375 --entry 78000 --exit 70000 --pnl 300</code>",
+            reply_markup=journal_add_menu_keyboard(),
+            html=True,
+        )
+    if action == "journal_add_close":
+        return TelegramResponse(
+            "✅ <b>Закрити угоду</b>\n"
+            "━━━━━━━━━━━━━━━━\n\n"
+            "Якщо вже внесені <code>pm_pnl</code> і <code>futures_pnl</code>, бот складе їх сам:\n\n"
+            "<code>/close trade_id</code>\n\n"
+            "Або задай сумарний результат вручну:\n"
+            "<code>/close trade_id --pnl 180 --note \"закрив руками\"</code>",
+            reply_markup=journal_add_menu_keyboard(),
+            html=True,
+        )
     if action == "positions":
         return TelegramResponse(render_wallet_positions(), reply_markup=positions_menu_keyboard(), html=True)
     if action == "positions_risk":
